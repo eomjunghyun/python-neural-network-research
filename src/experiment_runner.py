@@ -15,8 +15,10 @@ from .config import ExperimentConfig
 from .data_utils import add_noise_to_signal, generate_sin_data, make_dataset, split_train_test_tensors
 from .metrics import (
     calculate_rank_metrics,
+    calculate_sampled_basis_numerical_dim,
     calculate_subspace_alignment_metrics,
     min_delta_f,
+    min_delta_theta,
     normalize_feature_columns,
     regression_accuracy,
     regression_r2,
@@ -26,15 +28,83 @@ from .metrics import (
 from .models import build_model
 
 
+def _basis_kwargs_from_signal_info(cfg: ExperimentConfig, signal_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Build basis-construction kwargs shared across metrics helpers."""
+
+    return {
+        "time_mode": cfg.time_mode,
+        "freqs": signal_info.get("freqs"),
+        "thetas": signal_info.get("thetas"),
+        "dt": cfg.DT,
+        "lag": cfg.LAG,
+    }
+
+
+def _compute_representation_metrics(
+    h_np: np.ndarray,
+    cfg: ExperimentConfig,
+    signal_info: Dict[str, Any],
+    theoretical_rank: int,
+) -> Dict[str, Any]:
+    """Compute rank and subspace diagnostics for one hidden-feature matrix."""
+
+    _, singular_values, _ = np.linalg.svd(h_np, full_matrices=False)
+    rank_metrics = calculate_rank_metrics(singular_values, threshold=cfg.RANK_THRESHOLD)
+    rank_threshold = rank_metrics["rank_threshold"]
+    rank_entropy = rank_metrics["rank_entropy"]
+
+    rank_gap = abs(rank_threshold - theoretical_rank)
+    rel_rank_gap = rank_gap / (theoretical_rank + 1e-12)
+
+    idx_2k = theoretical_rank - 1
+    if idx_2k < len(singular_values):
+        sigma_2k = singular_values[idx_2k]
+        sigma_next = singular_values[idx_2k + 1] if (idx_2k + 1) < len(singular_values) else 0.0
+        spectral_gap_2k = float(sigma_2k / (sigma_next + 1e-12))
+    else:
+        spectral_gap_2k = np.nan
+
+    energy_ratio_2k = topk_energy_ratio(singular_values, top_k=theoretical_rank)
+    s_norm = singular_values / (singular_values[0] + 1e-12)
+    topk = np.full(cfg.SCREE_TOPK, np.nan, dtype=np.float64)
+    ncopy = min(cfg.SCREE_TOPK, len(s_norm))
+    topk[:ncopy] = s_norm[:ncopy]
+
+    basis_kwargs = _basis_kwargs_from_signal_info(cfg, signal_info)
+    align_metrics = calculate_subspace_alignment_metrics(
+        h_np,
+        top_k=theoretical_rank,
+        **basis_kwargs,
+    )
+
+    return {
+        "rank_threshold": rank_threshold,
+        "rank_entropy": rank_entropy,
+        "rank_gap": float(rank_gap),
+        "rel_rank_gap": float(rel_rank_gap),
+        "spectral_gap_2k": spectral_gap_2k,
+        "energy_ratio_2k": energy_ratio_2k,
+        "align_coverage": align_metrics["align_coverage"],
+        "align_purity": align_metrics["align_purity"],
+        "alignment_score_2k": align_metrics["alignment_score_2k"],
+        "align_mean_cosine": align_metrics["align_mean_cosine"],
+        "mean_principal_angle_deg": align_metrics["mean_principal_angle_deg"],
+        "principal_angles_deg": align_metrics["principal_angles_deg"],
+        "snorm_topk": topk,
+    }
+
+
 def train_one_seed(
     cfg: ExperimentConfig,
     x_train: torch.Tensor,
     y_train_target: torch.Tensor,
     x_test: torch.Tensor,
     y_test_target: torch.Tensor,
+    y_clean_train: torch.Tensor,
     y_clean_test: torch.Tensor,
+    y_noisy_train: torch.Tensor,
     y_noisy_test: torch.Tensor,
-    freqs: Tuple[int, ...],
+    signal_info: Dict[str, Any],
     theoretical_rank: int,
     bottleneck_dim: int,
     seed: int,
@@ -57,78 +127,81 @@ def train_one_seed(
 
     model.eval()
     with torch.no_grad():
-        y_pred_train, _ = model(x_train)
+        y_pred_train, h_train = model(x_train)
         y_pred_test, h_test = model(x_test)
+        h_train_np = h_train.detach().cpu().numpy()
         h_np = h_test.detach().cpu().numpy()
 
         if cfg.NORMALIZE_H_COLUMNS:
+            h_train_np = normalize_feature_columns(h_train_np)
             h_np = normalize_feature_columns(h_np)
 
         train_mse = float(criterion(y_pred_train, y_train_target).item())
         train_mae = float(nn.L1Loss()(y_pred_train, y_train_target).item())
         train_acc = regression_accuracy(y_train_target, y_pred_train, tol=cfg.ACC_TOLERANCE)
+        train_r2 = regression_r2(y_train_target, y_pred_train)
 
         test_mse = float(criterion(y_pred_test, y_test_target).item())
         test_mae = float(nn.L1Loss()(y_pred_test, y_test_target).item())
         test_acc = regression_accuracy(y_test_target, y_pred_test, tol=cfg.ACC_TOLERANCE)
         test_r2 = regression_r2(y_test_target, y_pred_test)
 
-        _, singular_values, _ = np.linalg.svd(h_np, full_matrices=False)
-        rank_metrics = calculate_rank_metrics(singular_values, threshold=cfg.RANK_THRESHOLD)
-        rank_threshold = rank_metrics["rank_threshold"]
-        rank_entropy = rank_metrics["rank_entropy"]
-
-        rank_gap = abs(rank_threshold - theoretical_rank)
-        rel_rank_gap = rank_gap / (theoretical_rank + 1e-12)
-
-        idx_2k = theoretical_rank - 1
-        if idx_2k < len(singular_values):
-            sigma_2k = singular_values[idx_2k]
-            sigma_next = singular_values[idx_2k + 1] if (idx_2k + 1) < len(singular_values) else 0.0
-            spectral_gap_2k = float(sigma_2k / (sigma_next + 1e-12))
-        else:
-            spectral_gap_2k = np.nan
-
-        energy_ratio_2k = topk_energy_ratio(singular_values, top_k=theoretical_rank)
-        s_norm = singular_values / (singular_values[0] + 1e-12)
-        topk = np.full(cfg.SCREE_TOPK, np.nan, dtype=np.float64)
-        ncopy = min(cfg.SCREE_TOPK, len(s_norm))
-        topk[:ncopy] = s_norm[:ncopy]
-
-        align_metrics = calculate_subspace_alignment_metrics(
+        train_rep = _compute_representation_metrics(
+            h_train_np,
+            cfg=cfg,
+            signal_info=signal_info,
+            theoretical_rank=theoretical_rank,
+        )
+        test_rep = _compute_representation_metrics(
             h_np,
-            freqs,
-            dt=cfg.DT,
-            lag=cfg.LAG,
-            top_k=theoretical_rank,
+            cfg=cfg,
+            signal_info=signal_info,
+            theoretical_rank=theoretical_rank,
         )
 
         result = {
             "mse": train_mse,
             "mae": train_mae,
             "acc": train_acc,
+            "train_r2": train_r2,
             "test_mse": test_mse,
             "test_mae": test_mae,
             "test_acc": test_acc,
             "test_r2": test_r2,
-            "rank_threshold": rank_threshold,
-            "rank_entropy": rank_entropy,
-            "rank_gap": float(rank_gap),
-            "rel_rank_gap": float(rel_rank_gap),
-            "spectral_gap_2k": spectral_gap_2k,
-            "energy_ratio_2k": energy_ratio_2k,
-            "align_coverage": align_metrics["align_coverage"],
-            "align_purity": align_metrics["align_purity"],
-            "alignment_score_2k": align_metrics["alignment_score_2k"],
-            "align_mean_cosine": align_metrics["align_mean_cosine"],
-            "mean_principal_angle_deg": align_metrics["mean_principal_angle_deg"],
-            "principal_angles_deg": align_metrics["principal_angles_deg"],
-            "snorm_topk": topk,
+            "train_rank_threshold": train_rep["rank_threshold"],
+            "train_rank_entropy": train_rep["rank_entropy"],
+            "train_rank_gap": train_rep["rank_gap"],
+            "train_rel_rank_gap": train_rep["rel_rank_gap"],
+            "train_spectral_gap_2k": train_rep["spectral_gap_2k"],
+            "train_energy_ratio_2k": train_rep["energy_ratio_2k"],
+            "train_align_coverage": train_rep["align_coverage"],
+            "train_align_purity": train_rep["align_purity"],
+            "train_alignment_score_2k": train_rep["alignment_score_2k"],
+            "train_align_mean_cosine": train_rep["align_mean_cosine"],
+            "train_mean_principal_angle_deg": train_rep["mean_principal_angle_deg"],
+            "rank_threshold": test_rep["rank_threshold"],
+            "rank_entropy": test_rep["rank_entropy"],
+            "rank_gap": test_rep["rank_gap"],
+            "rel_rank_gap": test_rep["rel_rank_gap"],
+            "spectral_gap_2k": test_rep["spectral_gap_2k"],
+            "energy_ratio_2k": test_rep["energy_ratio_2k"],
+            "align_coverage": test_rep["align_coverage"],
+            "align_purity": test_rep["align_purity"],
+            "alignment_score_2k": test_rep["alignment_score_2k"],
+            "align_mean_cosine": test_rep["align_mean_cosine"],
+            "mean_principal_angle_deg": test_rep["mean_principal_angle_deg"],
+            "principal_angles_deg": test_rep["principal_angles_deg"],
+            "snorm_topk": test_rep["snorm_topk"],
         }
 
         if cfg.USE_NOISE:
+            train_input_snr = snr_db_from_tensors(y_clean_train, y_noisy_train)
+            train_output_snr = snr_db_from_tensors(y_clean_train, y_pred_train)
             input_snr = snr_db_from_tensors(y_clean_test, y_noisy_test)
             output_snr = snr_db_from_tensors(y_clean_test, y_pred_test)
+            result["train_input_snr_db"] = float(train_input_snr)
+            result["train_output_snr_db"] = float(train_output_snr)
+            result["train_snr_gain_db"] = float(train_output_snr - train_input_snr)
             result["input_snr_db"] = float(input_snr)
             result["output_snr_db"] = float(output_snr)
             result["snr_gain_db"] = float(output_snr - input_snr)
@@ -146,10 +219,22 @@ def aggregate_seed_results(
         "mse",
         "mae",
         "acc",
+        "train_r2",
         "test_mse",
         "test_mae",
         "test_acc",
         "test_r2",
+        "train_rank_threshold",
+        "train_rank_entropy",
+        "train_rank_gap",
+        "train_rel_rank_gap",
+        "train_spectral_gap_2k",
+        "train_energy_ratio_2k",
+        "train_align_coverage",
+        "train_align_purity",
+        "train_alignment_score_2k",
+        "train_align_mean_cosine",
+        "train_mean_principal_angle_deg",
         "rank_threshold",
         "rank_entropy",
         "rank_gap",
@@ -163,7 +248,14 @@ def aggregate_seed_results(
         "mean_principal_angle_deg",
     ]
     if cfg.USE_NOISE:
-        scalar_keys += ["input_snr_db", "output_snr_db", "snr_gain_db"]
+        scalar_keys += [
+            "train_input_snr_db",
+            "train_output_snr_db",
+            "train_snr_gain_db",
+            "input_snr_db",
+            "output_snr_db",
+            "snr_gain_db",
+        ]
 
     output: Dict[str, Any] = {}
     for key in scalar_keys:
@@ -193,10 +285,12 @@ def make_summary_dataframe(
     cols = [
         "set_idx",
         "freqs",
+        "thetas",
         "amplitudes",
         "phases",
         "actual_snr_db",
         "min_delta_f",
+        "min_delta_theta",
         "mse_mean",
         "mse_std",
         "mse_ci95_low",
@@ -209,6 +303,10 @@ def make_summary_dataframe(
         "acc_std",
         "acc_ci95_low",
         "acc_ci95_high",
+        "train_r2_mean",
+        "train_r2_std",
+        "train_r2_ci95_low",
+        "train_r2_ci95_high",
         "test_mse_mean",
         "test_mse_std",
         "test_mse_ci95_low",
@@ -233,6 +331,26 @@ def make_summary_dataframe(
         "rank_entropy_std",
         "rank_entropy_ci95_low",
         "rank_entropy_ci95_high",
+        "train_rank_threshold_mean",
+        "train_rank_threshold_std",
+        "train_rank_threshold_ci95_low",
+        "train_rank_threshold_ci95_high",
+        "train_rank_entropy_mean",
+        "train_rank_entropy_std",
+        "train_rank_entropy_ci95_low",
+        "train_rank_entropy_ci95_high",
+        "fourier_numerical_dim_mean",
+        "fourier_numerical_dim_std",
+        "fourier_numerical_dim_ci95_low",
+        "fourier_numerical_dim_ci95_high",
+        "train_rank_gap_mean",
+        "train_rank_gap_std",
+        "train_rank_gap_ci95_low",
+        "train_rank_gap_ci95_high",
+        "train_rel_rank_gap_mean",
+        "train_rel_rank_gap_std",
+        "train_rel_rank_gap_ci95_low",
+        "train_rel_rank_gap_ci95_high",
         "rank_gap_mean",
         "rank_gap_std",
         "rank_gap_ci95_low",
@@ -245,10 +363,38 @@ def make_summary_dataframe(
         "spectral_gap_2k_std",
         "spectral_gap_2k_ci95_low",
         "spectral_gap_2k_ci95_high",
+        "train_spectral_gap_2k_mean",
+        "train_spectral_gap_2k_std",
+        "train_spectral_gap_2k_ci95_low",
+        "train_spectral_gap_2k_ci95_high",
         "energy_ratio_2k_mean",
         "energy_ratio_2k_std",
         "energy_ratio_2k_ci95_low",
         "energy_ratio_2k_ci95_high",
+        "train_energy_ratio_2k_mean",
+        "train_energy_ratio_2k_std",
+        "train_energy_ratio_2k_ci95_low",
+        "train_energy_ratio_2k_ci95_high",
+        "train_align_coverage_mean",
+        "train_align_coverage_std",
+        "train_align_coverage_ci95_low",
+        "train_align_coverage_ci95_high",
+        "train_align_purity_mean",
+        "train_align_purity_std",
+        "train_align_purity_ci95_low",
+        "train_align_purity_ci95_high",
+        "train_alignment_score_2k_mean",
+        "train_alignment_score_2k_std",
+        "train_alignment_score_2k_ci95_low",
+        "train_alignment_score_2k_ci95_high",
+        "train_align_mean_cosine_mean",
+        "train_align_mean_cosine_std",
+        "train_align_mean_cosine_ci95_low",
+        "train_align_mean_cosine_ci95_high",
+        "train_mean_principal_angle_deg_mean",
+        "train_mean_principal_angle_deg_std",
+        "train_mean_principal_angle_deg_ci95_low",
+        "train_mean_principal_angle_deg_ci95_high",
         "align_coverage_mean",
         "align_coverage_std",
         "align_coverage_ci95_low",
@@ -272,6 +418,18 @@ def make_summary_dataframe(
     ]
     if cfg.USE_NOISE:
         cols += [
+            "train_input_snr_db_mean",
+            "train_input_snr_db_std",
+            "train_input_snr_db_ci95_low",
+            "train_input_snr_db_ci95_high",
+            "train_output_snr_db_mean",
+            "train_output_snr_db_std",
+            "train_output_snr_db_ci95_low",
+            "train_output_snr_db_ci95_high",
+            "train_snr_gain_db_mean",
+            "train_snr_gain_db_std",
+            "train_snr_gain_db_ci95_low",
+            "train_snr_gain_db_ci95_high",
             "input_snr_db_mean",
             "input_snr_db_std",
             "input_snr_db_ci95_low",
@@ -290,7 +448,13 @@ def make_summary_dataframe(
     available_cols = [col for col in cols if col in df.columns]
     summary_df = df[available_cols].copy()
 
-    overall_row = {"set_idx": "overall", "freqs": None, "amplitudes": None, "phases": None}
+    overall_row = {
+        "set_idx": "overall",
+        "freqs": None,
+        "thetas": None,
+        "amplitudes": None,
+        "phases": None,
+    }
     overall_row.update(overall_summary)
     return pd.concat([summary_df, pd.DataFrame([overall_row])], ignore_index=True)
 
@@ -339,6 +503,7 @@ def print_overall_summary(overall_summary: Dict[str, Any], cfg: ExperimentConfig
         "test_r2",
         "rank_threshold",
         "rank_entropy",
+        "fourier_numerical_dim",
         "rank_gap",
         "rel_rank_gap",
         "spectral_gap_2k",
@@ -373,6 +538,7 @@ def print_overall_ci95_summary(overall_summary: Dict[str, Any], cfg: ExperimentC
         "test_r2",
         "rank_threshold",
         "rank_entropy",
+        "fourier_numerical_dim",
         "rank_gap",
         "rel_rank_gap",
         "spectral_gap_2k",
@@ -414,11 +580,18 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
     bottleneck_dim = cfg.BOTTLENECK_MULTIPLIER * cfg.NUM_FREQS
 
     if cfg.VERBOSE:
-        print(
-            f"--- Start experiment (bottleneck={bottleneck_dim}, "
-            f"num_freqs={cfg.NUM_FREQS}, theoretical_rank={theoretical_rank}, "
-            f"freq_range=[{cfg.FREQ_MIN}, {cfg.FREQ_MAX}], dt={cfg.DT}) ---"
-        )
+        if cfg.time_mode == "continuous":
+            print(
+                f"--- Start experiment (mode=continuous, bottleneck={bottleneck_dim}, "
+                f"num_freqs={cfg.NUM_FREQS}, theoretical_rank={theoretical_rank}, "
+                f"freq_range=[{cfg.FREQ_MIN}, {cfg.FREQ_MAX}], dt={cfg.DT}) ---"
+            )
+        else:
+            print(
+                f"--- Start experiment (mode=discrete, bottleneck={bottleneck_dim}, "
+                f"num_freqs={cfg.NUM_FREQS}, theoretical_rank={theoretical_rank}, "
+                f"theta_range=[{cfg.theta_min:.4f}, {cfg.theta_max:.4f}]) ---"
+            )
         if cfg.RANDOM_AMPLITUDE:
             print(f"--- amplitude randomization: U[{cfg.AMP_MIN}, {cfg.AMP_MAX}] ---")
         else:
@@ -443,6 +616,7 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
         clean_data, signal_info = generate_sin_data(cfg, freqs_rng, rng_np)
 
         freqs = signal_info["freqs"]
+        thetas = signal_info["thetas"]
         amplitudes = signal_info["amplitudes"]
         phases = signal_info["phases"]
 
@@ -470,9 +644,9 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
             x_test,
             y_train,
             y_test,
-            _y_clean_train,
+            y_clean_train,
             y_clean_test,
-            _y_noisy_train,
+            y_noisy_train,
             y_noisy_test,
         ) = split_train_test_tensors(
             x_all,
@@ -480,6 +654,15 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
             y_clean_all,
             y_noisy_all,
             test_ratio=cfg.TEST_RATIO,
+        )
+
+        fourier_metrics = calculate_sampled_basis_numerical_dim(
+            time_mode=cfg.time_mode,
+            freqs=freqs,
+            thetas=thetas,
+            dt=cfg.DT,
+            lag=cfg.LAG,
+            seq_len=int(x_test.shape[0]),
         )
 
         seed_results = []
@@ -490,9 +673,11 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
                 y_train_target=y_train,
                 x_test=x_test,
                 y_test_target=y_test,
+                y_clean_train=y_clean_train,
                 y_clean_test=y_clean_test,
+                y_noisy_train=y_noisy_train,
                 y_noisy_test=y_noisy_test,
-                freqs=freqs,
+                signal_info=signal_info,
                 theoretical_rank=theoretical_rank,
                 bottleneck_dim=bottleneck_dim,
                 seed=cfg.TRAIN_SEED_BASE + seed_idx,
@@ -506,16 +691,25 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
         row = {
             "set_idx": experiment_idx + 1,
             "freqs": freqs,
+            "thetas": thetas,
             "amplitudes": amplitudes,
             "phases": phases,
             "actual_snr_db": float(actual_snr),
             "min_delta_f": min_delta_f(freqs),
+            "min_delta_theta": min_delta_theta(thetas),
+            "fourier_numerical_dim_mean": float(fourier_metrics["fourier_numerical_dim"]),
+            "fourier_numerical_dim_std": 0.0,
+            "fourier_numerical_dim_ci95_low": float(fourier_metrics["fourier_numerical_dim"]),
+            "fourier_numerical_dim_ci95_high": float(fourier_metrics["fourier_numerical_dim"]),
             **aggregated,
         }
         set_rows.append(row)
 
         if cfg.VERBOSE:
-            print(f"set {experiment_idx + 1:2d}: freqs={freqs}")
+            if cfg.time_mode == "continuous":
+                print(f"set {experiment_idx + 1:2d}: freqs={freqs}")
+            else:
+                print(f"set {experiment_idx + 1:2d}: thetas={np.round(np.array(thetas), 6)}")
             print(f"  amplitudes      = {np.round(np.array(amplitudes), 4)}")
             if cfg.RANDOM_PHASE:
                 print(f"  phases          = {np.round(np.array(phases), 4)}")
@@ -549,6 +743,7 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
                 f"  Rank(entropy)   = "
                 f"{aggregated['rank_entropy_mean']:.2f} ± {aggregated['rank_entropy_std']:.2f}"
             )
+            print(f"  Fourier dim     = {fourier_metrics['fourier_numerical_dim']:.2f}")
             print(f"  rank_gap        = {aggregated['rank_gap_mean']:.2f} ± {aggregated['rank_gap_std']:.2f}")
             print(
                 f"  rel_rank_gap    = "
@@ -595,6 +790,7 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
         "test_r2_mean",
         "rank_threshold_mean",
         "rank_entropy_mean",
+        "fourier_numerical_dim_mean",
         "rank_gap_mean",
         "rel_rank_gap_mean",
         "spectral_gap_2k_mean",

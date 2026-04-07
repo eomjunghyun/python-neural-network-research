@@ -15,7 +15,10 @@ class ExperimentConfig:
     TRAIN_SEED_BASE: int = 100
 
     SEQ_LEN: int = 1000
+    time_mode: str = "continuous"
     DT: float = 0.05
+    theta_min: float = 0.05 * np.pi
+    theta_max: float = 0.85 * np.pi
     NUM_FREQS: int = 4
     NUM_FREQS_MIN: int = 1
     NUM_FREQS_MAX: int = 30

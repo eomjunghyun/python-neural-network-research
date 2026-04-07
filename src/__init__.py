@@ -1,6 +1,13 @@
 from .common_utils import mean_std, mean_std_ci95, set_seed, validate_config, validate_sampling_constraints
 from .config import ExperimentConfig
-from .data_utils import add_noise_to_signal, generate_sin_data, make_dataset, split_train_test_tensors
+from .data_utils import (
+    add_noise_to_signal,
+    generate_continuous_sin_data,
+    generate_discrete_sin_data,
+    generate_sin_data,
+    make_dataset,
+    split_train_test_tensors,
+)
 from .experiment_runner import (
     aggregate_seed_results,
     make_summary_dataframe,
@@ -11,9 +18,16 @@ from .experiment_runner import (
     train_one_seed,
 )
 from .metrics import (
+    build_sampled_basis_matrix,
+    build_sampled_discrete_basis_matrix,
+    build_sampled_fourier_matrix,
     calculate_rank_metrics,
+    calculate_sampled_basis_numerical_dim,
+    calculate_sampled_discrete_numerical_dim,
+    calculate_sampled_fourier_numerical_dim,
     calculate_subspace_alignment_metrics,
     min_delta_f,
+    min_delta_theta,
     normalize_feature_columns,
     regression_accuracy,
     regression_r2,
@@ -42,14 +56,23 @@ __all__ = [
     "validate_config",
     "mean_std",
     "mean_std_ci95",
+    "generate_continuous_sin_data",
+    "generate_discrete_sin_data",
     "generate_sin_data",
     "add_noise_to_signal",
     "make_dataset",
     "split_train_test_tensors",
     "regression_accuracy",
     "regression_r2",
+    "build_sampled_basis_matrix",
+    "build_sampled_discrete_basis_matrix",
+    "build_sampled_fourier_matrix",
     "calculate_rank_metrics",
+    "calculate_sampled_basis_numerical_dim",
+    "calculate_sampled_discrete_numerical_dim",
+    "calculate_sampled_fourier_numerical_dim",
     "min_delta_f",
+    "min_delta_theta",
     "snr_db_from_tensors",
     "normalize_feature_columns",
     "calculate_subspace_alignment_metrics",

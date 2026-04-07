@@ -9,12 +9,24 @@ import torch
 from .config import ExperimentConfig
 
 
-def generate_sin_data(
+def _sample_amplitudes(cfg: ExperimentConfig, rng_np: np.random.Generator) -> np.ndarray:
+    if cfg.RANDOM_AMPLITUDE:
+        return rng_np.uniform(cfg.AMP_MIN, cfg.AMP_MAX, size=cfg.NUM_FREQS)
+    return np.ones(cfg.NUM_FREQS, dtype=np.float64)
+
+
+def _sample_phases(cfg: ExperimentConfig, rng_np: np.random.Generator) -> np.ndarray:
+    if cfg.RANDOM_PHASE:
+        return rng_np.uniform(cfg.PHASE_MIN, cfg.PHASE_MAX, size=cfg.NUM_FREQS)
+    return np.zeros(cfg.NUM_FREQS, dtype=np.float64)
+
+
+def generate_continuous_sin_data(
     cfg: ExperimentConfig,
     rng_py: random.Random,
     rng_np: np.random.Generator,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
-    """Generate a sinusoid mixture with amplitude and phase controls."""
+    """Generate a continuous-time sinusoid mixture and sample it at dt."""
 
     population_size = cfg.FREQ_MAX - cfg.FREQ_MIN + 1
     if cfg.NUM_FREQS > population_size:
@@ -22,16 +34,8 @@ def generate_sin_data(
 
     t = np.arange(cfg.SEQ_LEN, dtype=np.float64) * cfg.DT
     freqs = rng_py.sample(range(cfg.FREQ_MIN, cfg.FREQ_MAX + 1), cfg.NUM_FREQS)
-
-    if cfg.RANDOM_AMPLITUDE:
-        amplitudes = rng_np.uniform(cfg.AMP_MIN, cfg.AMP_MAX, size=cfg.NUM_FREQS)
-    else:
-        amplitudes = np.ones(cfg.NUM_FREQS, dtype=np.float64)
-
-    if cfg.RANDOM_PHASE:
-        phases = rng_np.uniform(cfg.PHASE_MIN, cfg.PHASE_MAX, size=cfg.NUM_FREQS)
-    else:
-        phases = np.zeros(cfg.NUM_FREQS, dtype=np.float64)
+    amplitudes = _sample_amplitudes(cfg, rng_np)
+    phases = _sample_phases(cfg, rng_np)
 
     y = np.zeros_like(t, dtype=np.float64)
     components = []
@@ -47,12 +51,65 @@ def generate_sin_data(
         )
 
     info = {
+        "time_mode": "continuous",
         "freqs": tuple(int(freq) for freq in freqs),
+        "thetas": None,
         "amplitudes": tuple(float(amplitude) for amplitude in amplitudes),
         "phases": tuple(float(phase) for phase in phases),
         "components": components,
     }
     return y.astype(np.float32), info
+
+
+def generate_discrete_sin_data(
+    cfg: ExperimentConfig,
+    rng_py: random.Random,
+    rng_np: np.random.Generator,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Generate a discrete-time sinusoid mixture directly on n = 0, 1, ..., N-1."""
+
+    _ = rng_py
+    n = np.arange(cfg.SEQ_LEN, dtype=np.float64)
+    thetas = np.sort(rng_np.uniform(cfg.theta_min, cfg.theta_max, size=cfg.NUM_FREQS))
+    amplitudes = _sample_amplitudes(cfg, rng_np)
+    phases = _sample_phases(cfg, rng_np)
+
+    y = np.zeros_like(n, dtype=np.float64)
+    components = []
+    for amplitude, theta, phase in zip(amplitudes, thetas, phases):
+        component = amplitude * np.sin(theta * n + phase)
+        y += component
+        components.append(
+            {
+                "theta": float(theta),
+                "amplitude": float(amplitude),
+                "phase": float(phase),
+            }
+        )
+
+    info = {
+        "time_mode": "discrete",
+        "freqs": None,
+        "thetas": tuple(float(theta) for theta in thetas),
+        "amplitudes": tuple(float(amplitude) for amplitude in amplitudes),
+        "phases": tuple(float(phase) for phase in phases),
+        "components": components,
+    }
+    return y.astype(np.float32), info
+
+
+def generate_sin_data(
+    cfg: ExperimentConfig,
+    rng_py: random.Random,
+    rng_np: np.random.Generator,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Generate a sinusoid mixture for either continuous-time or discrete-time mode."""
+
+    if cfg.time_mode == "continuous":
+        return generate_continuous_sin_data(cfg, rng_py, rng_np)
+    if cfg.time_mode == "discrete":
+        return generate_discrete_sin_data(cfg, rng_py, rng_np)
+    raise ValueError(f"Unsupported time_mode '{cfg.time_mode}'. Expected 'continuous' or 'discrete'.")
 
 
 def add_noise_to_signal(

@@ -40,13 +40,26 @@ def calculate_rank_metrics(S: np.ndarray, threshold: float) -> Dict[str, float]:
     }
 
 
-def min_delta_f(freqs: Sequence[int]) -> float:
+def min_delta_f(freqs: Sequence[int] | None) -> float:
     """Smallest spacing among sampled frequencies."""
 
+    if freqs is None:
+        return np.nan
     if len(freqs) < 2:
         return np.nan
     sorted_freqs = np.sort(np.array(freqs, dtype=np.float64))
     return float(np.min(np.diff(sorted_freqs)))
+
+
+def min_delta_theta(thetas: Sequence[float] | None) -> float:
+    """Smallest spacing among sampled discrete-time angular frequencies."""
+
+    if thetas is None:
+        return np.nan
+    if len(thetas) < 2:
+        return np.nan
+    sorted_thetas = np.sort(np.array(thetas, dtype=np.float64))
+    return float(np.min(np.diff(sorted_thetas)))
 
 
 def snr_db_from_tensors(clean_ref: torch.Tensor, observed: torch.Tensor) -> float:
@@ -69,23 +82,155 @@ def normalize_feature_columns(H: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return features / col_norms
 
 
-def calculate_subspace_alignment_metrics(
-    H: np.ndarray,
+def build_sampled_fourier_matrix(
     freqs: Tuple[int, ...],
     dt: float,
     lag: int,
-    top_k: int,
-) -> Dict[str, Any]:
-    """Compare hidden-feature subspace with the sinusoidal basis subspace."""
+    seq_len: int,
+) -> np.ndarray:
+    """Build the sampled sin/cos basis matrix used for subspace comparison."""
 
-    seq_len = H.shape[0]
     t = (np.arange(seq_len, dtype=np.float64) + lag) * dt
-
     basis = []
     for freq in freqs:
         basis.append(np.sin(freq * t))
         basis.append(np.cos(freq * t))
-    basis_matrix = np.array(basis).T
+    return np.array(basis, dtype=np.float64).T
+
+
+def build_sampled_discrete_basis_matrix(
+    thetas: Tuple[float, ...],
+    lag: int,
+    seq_len: int,
+) -> np.ndarray:
+    """Build the sampled discrete-time sin/cos basis matrix."""
+
+    n = np.arange(seq_len, dtype=np.float64) + lag
+    basis = []
+    for theta in thetas:
+        basis.append(np.sin(theta * n))
+        basis.append(np.cos(theta * n))
+    return np.array(basis, dtype=np.float64).T
+
+
+def build_sampled_basis_matrix(
+    *,
+    time_mode: str,
+    seq_len: int,
+    lag: int,
+    freqs: Tuple[int, ...] | None = None,
+    thetas: Tuple[float, ...] | None = None,
+    dt: float = 1.0,
+) -> np.ndarray:
+    """Build the sampled basis matrix for either continuous or discrete mode."""
+
+    if time_mode == "continuous":
+        if freqs is None:
+            raise ValueError("Continuous mode requires 'freqs'.")
+        return build_sampled_fourier_matrix(freqs=freqs, dt=dt, lag=lag, seq_len=seq_len)
+    if time_mode == "discrete":
+        if thetas is None:
+            raise ValueError("Discrete mode requires 'thetas'.")
+        return build_sampled_discrete_basis_matrix(thetas=thetas, lag=lag, seq_len=seq_len)
+    raise ValueError(f"Unsupported time_mode '{time_mode}'. Expected 'continuous' or 'discrete'.")
+
+
+def calculate_sampled_fourier_numerical_dim(
+    freqs: Tuple[int, ...],
+    dt: float,
+    lag: int,
+    seq_len: int,
+) -> Dict[str, Any]:
+    """Return numerical-dimension diagnostics for the sampled Fourier matrix."""
+
+    basis_matrix = build_sampled_fourier_matrix(freqs=freqs, dt=dt, lag=lag, seq_len=seq_len)
+    if basis_matrix.size == 0:
+        return {
+            "fourier_numerical_dim": 0,
+            "fourier_singular_values": np.array([], dtype=np.float64),
+        }
+
+    _, singular_values, _ = np.linalg.svd(basis_matrix, full_matrices=False)
+    return {
+        "fourier_numerical_dim": int(np.linalg.matrix_rank(basis_matrix)),
+        "fourier_singular_values": singular_values,
+    }
+
+
+def calculate_sampled_discrete_numerical_dim(
+    thetas: Tuple[float, ...],
+    lag: int,
+    seq_len: int,
+) -> Dict[str, Any]:
+    """Return numerical-dimension diagnostics for the sampled discrete-time basis matrix."""
+
+    basis_matrix = build_sampled_discrete_basis_matrix(thetas=thetas, lag=lag, seq_len=seq_len)
+    if basis_matrix.size == 0:
+        return {
+            "fourier_numerical_dim": 0,
+            "fourier_singular_values": np.array([], dtype=np.float64),
+        }
+
+    _, singular_values, _ = np.linalg.svd(basis_matrix, full_matrices=False)
+    return {
+        "fourier_numerical_dim": int(np.linalg.matrix_rank(basis_matrix)),
+        "fourier_singular_values": singular_values,
+    }
+
+
+def calculate_sampled_basis_numerical_dim(
+    *,
+    time_mode: str,
+    seq_len: int,
+    lag: int,
+    freqs: Tuple[int, ...] | None = None,
+    thetas: Tuple[float, ...] | None = None,
+    dt: float = 1.0,
+) -> Dict[str, Any]:
+    """Return numerical-dimension diagnostics for the sampled basis matrix."""
+
+    basis_matrix = build_sampled_basis_matrix(
+        time_mode=time_mode,
+        seq_len=seq_len,
+        lag=lag,
+        freqs=freqs,
+        thetas=thetas,
+        dt=dt,
+    )
+    if basis_matrix.size == 0:
+        return {
+            "fourier_numerical_dim": 0,
+            "fourier_singular_values": np.array([], dtype=np.float64),
+        }
+
+    _, singular_values, _ = np.linalg.svd(basis_matrix, full_matrices=False)
+    return {
+        "fourier_numerical_dim": int(np.linalg.matrix_rank(basis_matrix)),
+        "fourier_singular_values": singular_values,
+    }
+
+
+def calculate_subspace_alignment_metrics(
+    H: np.ndarray,
+    freqs: Tuple[int, ...] | None,
+    dt: float,
+    lag: int,
+    top_k: int,
+    *,
+    thetas: Tuple[float, ...] | None = None,
+    time_mode: str = "continuous",
+) -> Dict[str, Any]:
+    """Compare hidden-feature subspace with the sinusoidal basis subspace."""
+
+    seq_len = H.shape[0]
+    basis_matrix = build_sampled_basis_matrix(
+        time_mode=time_mode,
+        seq_len=seq_len,
+        lag=lag,
+        freqs=freqs,
+        thetas=thetas,
+        dt=dt,
+    )
 
     q_f, _ = np.linalg.qr(basis_matrix)
     q_h, _ = np.linalg.qr(H)

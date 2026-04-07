@@ -39,12 +39,12 @@ def validate_sampling_constraints(dt: float, freq_max: float, margin: float = 0.
 def validate_config(cfg: ExperimentConfig) -> None:
     """Validate configuration consistency before running an experiment."""
 
+    if cfg.time_mode not in ("continuous", "discrete"):
+        raise ValueError("time_mode must be either 'continuous' or 'discrete'.")
     if cfg.NUM_FREQS < cfg.NUM_FREQS_MIN or cfg.NUM_FREQS > cfg.NUM_FREQS_MAX:
         raise ValueError(
             f"NUM_FREQS must be an integer between {cfg.NUM_FREQS_MIN} and {cfg.NUM_FREQS_MAX}."
         )
-    if cfg.NUM_FREQS > (cfg.FREQ_MAX - cfg.FREQ_MIN + 1):
-        raise ValueError("NUM_FREQS exceeds the number of available integer frequencies.")
     if cfg.TRAIN_TARGET not in ("noisy", "clean"):
         raise ValueError("TRAIN_TARGET must be either 'noisy' or 'clean'.")
     if cfg.MODEL_ID not in MODEL_REGISTRY:
@@ -58,7 +58,13 @@ def validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("AMP_MIN and AMP_MAX must be positive and satisfy AMP_MIN <= AMP_MAX.")
     if cfg.PHASE_MIN > cfg.PHASE_MAX:
         raise ValueError("PHASE_MIN must be less than or equal to PHASE_MAX.")
-    validate_sampling_constraints(cfg.DT, cfg.FREQ_MAX, margin=cfg.NYQUIST_MARGIN)
+    if cfg.time_mode == "continuous":
+        if cfg.NUM_FREQS > (cfg.FREQ_MAX - cfg.FREQ_MIN + 1):
+            raise ValueError("NUM_FREQS exceeds the number of available integer frequencies.")
+        validate_sampling_constraints(cfg.DT, cfg.FREQ_MAX, margin=cfg.NYQUIST_MARGIN)
+    else:
+        if not (0.0 < cfg.theta_min < cfg.theta_max < np.pi):
+            raise ValueError("Discrete mode requires 0 < theta_min < theta_max < pi.")
 
 
 def mean_std(values: List[float]) -> Tuple[float, float]:

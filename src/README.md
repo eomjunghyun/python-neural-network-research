@@ -1,7 +1,8 @@
 # `src` Guide
 
-이 디렉터리는 `0326_실험5_정규화.ipynb`의 공통 로직을 재사용 가능한 파이썬 모듈로 분리한 연구 베이스 코드다.  
-설정, 모델, 데이터 생성, 노이즈 주입, 지표 계산, 실험 실행 함수를 모두 `src` 아래로 옮겨서 이후 실험이 동일한 기준 코드를 사용하도록 정리했다.
+`src/`는 실험 공통 로직을 모듈화한 코드 영역이다. 설정, 모델, 시계열 생성, 노이즈 주입, 지표 계산, 실험 실행이 모두 여기 모여 있다.
+
+현재 구현은 연속시간 샘플링과 이산시간 직접 생성 둘 다 지원한다.
 
 ## 디렉터리 구성
 
@@ -33,184 +34,215 @@ results = run_experiment(cfg)
 print(results["summary_df"])
 ```
 
-모델 식별자를 바꾸면 같은 파이프라인에서 다른 모델 변형을 바로 비교할 수 있다.
+Discrete mode 예시는 아래와 같다.
 
 ```python
-cfg = ExperimentConfig(MODEL_ID="AN004_DEEP_TANH")
+import numpy as np
+from src import ExperimentConfig, run_experiment
+
+cfg = ExperimentConfig(
+    time_mode="discrete",
+    NUM_FREQS=4,
+    SEQ_LEN=2000,
+    LAG=32,
+    theta_min=0.05 * np.pi,
+    theta_max=0.85 * np.pi,
+    RANDOM_AMPLITUDE=False,
+    RANDOM_PHASE=True,
+)
 results = run_experiment(cfg)
 ```
+
+## 공개 API
+
+`src/__init__.py`에서 아래 주요 객체와 함수를 export한다.
+
+- 설정:
+  - `ExperimentConfig`
+- 모델:
+  - `build_model`
+  - `MODEL_REGISTRY`
+  - `AnalyticNetAN001BnReLU`
+  - `AnalyticNetAN002NoBnTanh`
+  - `AnalyticNetAN003Linear`
+  - `AnalyticNetAN004DeepTanh`
+- 데이터:
+  - `generate_sin_data`
+  - `generate_continuous_sin_data`
+  - `generate_discrete_sin_data`
+  - `add_noise_to_signal`
+  - `make_dataset`
+  - `split_train_test_tensors`
+- 지표:
+  - `calculate_rank_metrics`
+  - `calculate_subspace_alignment_metrics`
+  - `calculate_sampled_basis_numerical_dim`
+  - `build_sampled_basis_matrix`
+  - `min_delta_f`
+  - `min_delta_theta`
+  - `regression_accuracy`
+  - `regression_r2`
+  - `snr_db_from_tensors`
+  - `normalize_feature_columns`
+  - `topk_energy_ratio`
+- 실험 러너:
+  - `train_one_seed`
+  - `aggregate_seed_results`
+  - `make_summary_dataframe`
+  - `plot_results`
+  - `print_overall_summary`
+  - `print_overall_ci95_summary`
+  - `run_experiment`
 
 ## 모듈별 설명
 
 ### `config.py`
 
-`ExperimentConfig`를 정의한다. 노트북에서 흩어져 있던 실험 하이퍼파라미터를 하나의 dataclass로 고정해 재현성을 높인다.
+`ExperimentConfig` dataclass를 정의한다. 모든 실험 하이퍼파라미터는 여기에 모인다.
 
-중요 파라미터:
+핵심 필드는 다음과 같다.
 
-- `MODEL_ID`: 사용할 모델 식별자
-- `NUM_FREQS`: 합성 주파수 개수
-- `LAG`: 입력 윈도우 길이
-- `TEST_RATIO`: chronological test split 비율
-- `SEQ_LEN`, `DT`: 샘플 길이와 샘플링 간격
-- `USE_NOISE`, `NOISE_TYPE`, `SNR_DB`: 노이즈 실험 설정
-- `NORMALIZE_H_COLUMNS`: hidden column 정규화 여부
+- seed 관련:
+  - `GLOBAL_SEED`
+  - `DATA_SEED_BASE`
+  - `NOISE_SEED_BASE`
+  - `TRAIN_SEED_BASE`
+- 시간 모드 관련:
+  - `time_mode`
+  - `DT`
+  - `theta_min`
+  - `theta_max`
+- 데이터 생성 관련:
+  - `SEQ_LEN`
+  - `NUM_FREQS`
+  - `NUM_FREQS_MIN`
+  - `NUM_FREQS_MAX`
+  - `FREQ_MIN`
+  - `FREQ_MAX`
+  - `NYQUIST_MARGIN`
+- amplitude / phase 관련:
+  - `RANDOM_AMPLITUDE`
+  - `AMP_MIN`
+  - `AMP_MAX`
+  - `RANDOM_PHASE`
+  - `PHASE_MIN`
+  - `PHASE_MAX`
+- noise 관련:
+  - `USE_NOISE`
+  - `NOISE_TYPE`
+  - `SNR_DB`
+  - `AR1_RHO`
+  - `IMPULSE_PROB`
+  - `IMPULSE_SCALE`
+- 학습 타깃:
+  - `TRAIN_TARGET`
+- 모델 / 최적화:
+  - `MODEL_ID`
+  - `LAG`
+  - `HIDDEN_DIM`
+  - `BOTTLENECK_MULTIPLIER`
+  - `LR`
+  - `EPOCHS`
+- 반복 실험:
+  - `NUM_EXPERIMENTS`
+  - `SEEDS_PER_FREQ`
+  - `TEST_RATIO`
+- 지표 / 출력:
+  - `ACC_TOLERANCE`
+  - `RANK_THRESHOLD`
+  - `SCREE_TOPK`
+  - `NORMALIZE_H_COLUMNS`
+  - `VERBOSE`
+  - `MAKE_PLOTS`
 
-예시:
-
-```python
-from src import ExperimentConfig
-
-cfg = ExperimentConfig(
-    MODEL_ID="AN003_LINEAR",
-    NUM_FREQS=5,
-    LAG=80,
-    SEQ_LEN=5000,
-    DT=0.01,
-    RANDOM_AMPLITUDE=False,
-    NORMALIZE_H_COLUMNS=True,
-)
-```
+기본값은 backward compatibility를 위해 `time_mode="continuous"`다.
 
 ### `models.py`
 
-식별자 기반으로 4개 모델을 제공한다.
-
-#### `AnalyticNetAN001BnReLU`
-
-기존 베이스라인 모델이다.
-
-1. `Linear(input_dim -> hidden_dim)`
-2. `BatchNorm1d(hidden_dim)`
-3. `ReLU()`
-4. `Linear(hidden_dim -> bottleneck_dim)`
-5. `BatchNorm1d(bottleneck_dim)`
-6. `Linear(bottleneck_dim -> 1, bias=False)`
-
-모델 식별자:
+식별자 기반으로 네 가지 모델을 제공한다.
 
 - `AN001_BN_RELU`
-
-#### `AnalyticNetAN002NoBnTanh`
-
-배치 정규화를 제거하고 활성화 함수를 `Tanh`로 교체한 모델이다.
-
-1. `Linear(input_dim -> hidden_dim)`
-2. `Tanh()`
-3. `Linear(hidden_dim -> bottleneck_dim)`
-4. `Tanh()`
-5. `Linear(bottleneck_dim -> 1, bias=False)`
-
-모델 식별자:
-
+  - `Linear -> BatchNorm1d -> ReLU -> Linear -> BatchNorm1d -> Linear`
 - `AN002_NO_BN_TANH`
-
-#### `AnalyticNetAN003Linear`
-
-활성화 함수를 제거한 선형 모델이다.
-
-1. `Linear(input_dim -> hidden_dim)`
-2. `Linear(hidden_dim -> bottleneck_dim)`
-3. `Linear(bottleneck_dim -> 1, bias=False)`
-
-모델 식별자:
-
+  - `Linear -> Tanh -> Linear -> Tanh -> Linear`
 - `AN003_LINEAR`
-
-#### `AnalyticNetAN004DeepTanh`
-
-`Tanh` 기반에 hidden layer를 하나 더 추가한 모델이다.
-
-1. `Linear(input_dim -> hidden_dim)`
-2. `Tanh()`
-3. `Linear(hidden_dim -> hidden_dim)`
-4. `Tanh()`
-5. `Linear(hidden_dim -> bottleneck_dim)`
-6. `Tanh()`
-7. `Linear(bottleneck_dim -> 1, bias=False)`
-
-모델 식별자:
-
+  - `Linear -> Linear -> Linear`
 - `AN004_DEEP_TANH`
+  - `Linear -> Tanh -> Linear -> Tanh -> Linear -> Tanh -> Linear`
 
-공통 출력:
+모든 모델은 `(y_hat, h)`를 반환한다.
 
-- `y_hat`: 다음 시점 예측값
+- `y_hat`: next-step prediction
 - `h`: bottleneck representation
-
-직접 생성 예시:
-
-```python
-from src.models import AnalyticNetAN002NoBnTanh
-import torch
-
-model = AnalyticNetAN002NoBnTanh(input_dim=32, hidden_dim=64, bottleneck_dim=16)
-x = torch.randn(8, 32)
-y_hat, h = model(x)
-```
-
-식별자 기반 생성 예시:
-
-```python
-from src import build_model
-
-model = build_model(
-    model_id="AN004_DEEP_TANH",
-    input_dim=32,
-    hidden_dim=64,
-    bottleneck_dim=16,
-)
-```
 
 ### `common_utils.py`
 
-실험 전역 공통 보조 함수를 둔다.
+실험 전역 공통 보조 함수들이다.
 
-#### `set_seed(seed: int) -> None`
-
-- Python, NumPy, PyTorch 시드를 동시에 고정한다.
-- `PYTHONHASHSEED`, `torch.backends.cudnn.deterministic`, `benchmark` 설정까지 함께 다룬다.
-
-#### `validate_sampling_constraints(dt: float, freq_max: float, margin: float = 0.98) -> None`
-
-- 샘플링 간격 `DT`가 최대 각주파수 `FREQ_MAX`를 안전하게 표현할 수 있는지 검사한다.
-- 기준은 `freq_max < margin * (pi / dt)` 이다.
-
-#### `validate_config(cfg: ExperimentConfig) -> None`
-
-다음을 한 번에 검사한다.
-
-- 주파수 개수 범위
-- 주파수 샘플링 가능 여부
-- `TRAIN_TARGET` 유효성
-- `MODEL_ID` 유효성
-- `NOISE_TYPE` 유효성
-- amplitude/phase 파라미터 정합성
-- Nyquist 조건
-
-#### `mean_std(values: List[float]) -> Tuple[float, float]`
-
-- scalar metric 평균과 표본 표준편차를 계산한다.
-- 값이 0개면 `nan`, 1개면 표준편차를 `0.0`으로 처리한다.
-
-#### `mean_std_ci95(values: List[float]) -> Tuple[float, float, float, float]`
-
-- 평균, 표준편차, 95% 신뢰구간 하한/상한을 반환한다.
-- 현재 구현은 `1.96 * std / sqrt(n)`을 쓰는 정규 근사 방식이다.
+- `set_seed(seed)`
+  - Python, NumPy, PyTorch seed를 동시에 고정한다
+- `validate_sampling_constraints(dt, freq_max, margin=0.98)`
+  - continuous mode에서 Nyquist margin 제약을 검사한다
+- `validate_config(cfg)`
+  - 설정 전체 유효성을 검사한다
+  - `time_mode`는 `"continuous"` 또는 `"discrete"`만 허용
+  - continuous mode에서는 정수 주파수 샘플링 가능성과 Nyquist 조건을 검사
+  - discrete mode에서는 `0 < theta_min < theta_max < pi`를 검사
+- `mean_std(values)`
+  - 평균과 표본표준편차를 계산한다
+- `mean_std_ci95(values)`
+  - 평균, 표준편차, 정규근사 95% 신뢰구간을 계산한다
 
 ### `data_utils.py`
 
-데이터 생성과 전처리를 담당한다.
+시계열 생성과 전처리를 담당한다.
+
+#### `generate_continuous_sin_data(cfg, rng_py, rng_np)`
+
+연속시간 신호를 먼저 정의하고 `DT`로 샘플링한다.
+
+\[
+x(t)=\sum_j a_j \sin(\omega_j t+\phi_j), \qquad t_n=n \cdot DT
+\]
+
+반환:
+
+- `y`: shape `(SEQ_LEN,)`의 `float32` 배열
+- `info`:
+  - `time_mode="continuous"`
+  - `freqs`
+  - `thetas=None`
+  - `amplitudes`
+  - `phases`
+  - `components`
+
+#### `generate_discrete_sin_data(cfg, rng_py, rng_np)`
+
+이산시간 시계열을 직접 생성한다.
+
+\[
+y_n=\sum_j a_j \sin(\theta_j n+\phi_j)
+\]
+
+반환:
+
+- `y`: shape `(SEQ_LEN,)`의 `float32` 배열
+- `info`:
+  - `time_mode="discrete"`
+  - `freqs=None`
+  - `thetas`
+  - `amplitudes`
+  - `phases`
+  - `components`
 
 #### `generate_sin_data(cfg, rng_py, rng_np)`
 
-- `NUM_FREQS`개의 정수 주파수를 `FREQ_MIN ~ FREQ_MAX` 범위에서 중복 없이 샘플링한다.
-- 각 성분에 대해 `a_k * sin(w_k * t + phi_k)`를 만든 뒤 전부 합산한다.
+공통 wrapper다.
 
-반환값:
+- `cfg.time_mode == "continuous"`면 `generate_continuous_sin_data`
+- `cfg.time_mode == "discrete"`면 `generate_discrete_sin_data`
 
-- `y`: shape `(SEQ_LEN,)`의 `float32` 시계열
-- `info`: `freqs`, `amplitudes`, `phases`, `components`
+기존 호출 방식은 유지되며, 새 실험에서만 `time_mode="discrete"`를 켜면 된다.
 
 #### `add_noise_to_signal(clean_signal, snr_db, noise_type, rng, ...)`
 
@@ -220,78 +252,73 @@ model = build_model(
 - `ar1`
 - `impulsive`
 
-기능:
+반환:
 
-- raw noise 생성
-- 목표 `SNR_DB`에 맞도록 전력 재스케일링
-- noisy signal, noise, 실제 달성 SNR 반환
+- `noisy`
+- `noise`
+- `actual_snr_db`
 
 #### `make_dataset(data, lag)`
 
-1차원 시계열을 supervised next-step prediction 데이터셋으로 변환한다.
+1차원 시계열을 lag-window 지도학습 텐서로 바꾼다.
 
-- 입력 `x[i] = data[i:i+lag]`
-- 타깃 `y[i] = data[i+lag]`
-
-반환 shape:
-
-- `x_train`: `(N, lag)`
-- `y_train`: `(N, 1)`
+- 입력: `data[i:i+lag]`
+- 타깃: `data[i+lag]`
 
 #### `split_train_test_tensors(*tensors, test_ratio)`
 
-- 정렬된 tensor들을 시계열 순서를 유지한 채 train/test로 분할한다.
-- 실험 코드는 이 함수를 사용해 `H_test` 기반 지표를 계산한다.
+정렬된 tensor들을 시계열 순서를 유지한 채 train/test로 분할한다.
 
 ### `metrics.py`
 
-표현 분석용 지표를 모은 모듈이다.
+표현 분석용 지표 모듈이다.
 
-#### `regression_accuracy(y_true, y_pred, tol)`
+#### 기본 회귀 지표
 
-- 절대 오차가 `tol` 이하인 비율을 계산한다.
+- `regression_accuracy(y_true, y_pred, tol)`
+- `regression_r2(y_true, y_pred)`
 
-#### `regression_r2(y_true, y_pred)`
+#### rank 관련
 
-- 테스트 결정계수 `R^2`를 계산한다.
+- `calculate_rank_metrics(S, threshold)`
+  - `rank_threshold`
+  - `rank_entropy`
+- `topk_energy_ratio(singular_values, top_k)`
 
-#### `calculate_rank_metrics(S, threshold)`
+#### 주파수/각주파수 간격
 
-- `rank_threshold`
-- `rank_entropy`
+- `min_delta_f(freqs)`
+- `min_delta_theta(thetas)`
 
-를 계산한다.
+#### feature 전처리
 
-`spectral_gap_2k`는 실험 러너에서 다음과 같이 계산한다.
+- `normalize_feature_columns(H, eps=1e-12)`
 
-```text
-spectral_gap_2k = sigma_(2k) / sigma_(2k+1)
-```
+#### basis 행렬 생성
 
-#### `min_delta_f(freqs)`
+- `build_sampled_fourier_matrix(freqs, dt, lag, seq_len)`
+  - continuous mode용 sampled Fourier basis
+- `build_sampled_discrete_basis_matrix(thetas, lag, seq_len)`
+  - discrete mode용 sampled basis
+- `build_sampled_basis_matrix(...)`
+  - `time_mode`에 따라 위 둘 중 하나를 호출하는 통합 인터페이스
 
-- 샘플링된 주파수들 사이 최소 간격을 계산한다.
+#### basis numerical dimension
 
-#### `snr_db_from_tensors(clean_ref, observed)`
+- `calculate_sampled_fourier_numerical_dim(...)`
+  - continuous 전용 helper
+- `calculate_sampled_discrete_numerical_dim(...)`
+  - discrete 전용 helper
+- `calculate_sampled_basis_numerical_dim(...)`
+  - mode-aware 통합 helper
 
-- clean 기준 대비 observed의 SNR을 dB 단위로 계산한다.
+현재 `fourier_numerical_dim`은 sampled basis 행렬의 `np.linalg.matrix_rank(...)` 결과다.
 
-#### `normalize_feature_columns(H, eps=1e-12)`
+#### subspace alignment
 
-- hidden feature matrix `H`의 각 column을 L2 normalize한다.
+- `calculate_subspace_alignment_metrics(H, freqs, dt, lag, top_k, *, thetas=None, time_mode="continuous")`
 
-#### `topk_energy_ratio(singular_values, top_k)`
-
-- 상위 `top_k` 특이값 에너지가 전체 에너지에서 차지하는 비율을 계산한다.
-
-#### `calculate_subspace_alignment_metrics(H, freqs, dt, lag)`
-
-핵심 분석 함수다.
-
-1. hidden feature 행렬 `H`의 column space를 구한다.
-2. 실제 신호를 구성한 주파수들에 대해 `sin`, `cos` basis를 만든다.
-3. 테스트 특징 행렬 `H_test`의 좌측 특이벡터를 구한다.
-4. 상위 `2k`개 좌측 특이벡터 `U_H^(2k)` 기준으로 alignment를 계산한다.
+이 함수는 `H`의 열공간과, sampled basis 행렬의 열공간을 비교한다. 개별 열을 1:1로 매칭하는 방식은 아니다.
 
 반환 지표:
 
@@ -302,58 +329,126 @@ spectral_gap_2k = sigma_(2k) / sigma_(2k+1)
 - `mean_principal_angle_deg`
 - `principal_angles_deg`
 
+`time_mode="continuous"`이면 `freqs` 기준, `time_mode="discrete"`이면 `thetas` 기준 basis를 만든다.
+
 ### `experiment_runner.py`
 
-전체 실험 파이프라인을 실행한다.
+실험 전체 파이프라인을 관리한다.
 
 #### `train_one_seed(...)`
 
-- `MODEL_ID`에 맞는 모델 1개를 한 seed로 학습한다.
-- MSE, MAE, accuracy, rank, subspace alignment, SNR 관련 지표를 계산한다.
+한 training seed에 대해 모델 하나를 학습하고 지표를 계산한다.
+
+출력에는 아래가 포함된다.
+
+- train 예측 지표:
+  - `mse`
+  - `mae`
+  - `acc`
+  - `train_r2`
+- test 예측 지표:
+  - `test_mse`
+  - `test_mae`
+  - `test_acc`
+  - `test_r2`
+- train representation 지표:
+  - `train_rank_threshold`
+  - `train_rank_entropy`
+  - `train_rank_gap`
+  - `train_rel_rank_gap`
+  - `train_spectral_gap_2k`
+  - `train_energy_ratio_2k`
+  - `train_align_coverage`
+  - `train_align_purity`
+  - `train_alignment_score_2k`
+  - `train_align_mean_cosine`
+  - `train_mean_principal_angle_deg`
+- test representation 지표:
+  - `rank_threshold`
+  - `rank_entropy`
+  - `rank_gap`
+  - `rel_rank_gap`
+  - `spectral_gap_2k`
+  - `energy_ratio_2k`
+  - `align_coverage`
+  - `align_purity`
+  - `alignment_score_2k`
+  - `align_mean_cosine`
+  - `mean_principal_angle_deg`
+
+`USE_NOISE=True`일 때는 train/test SNR 지표도 포함된다.
 
 #### `aggregate_seed_results(seed_results, cfg)`
 
-- 같은 frequency set에서 여러 seed 결과를 평균과 표준편차로 묶는다.
+같은 signal set에서 여러 training seed 결과를 집계한다.
+
+- 모든 scalar metric에 대해
+  - `*_mean`
+  - `*_std`
+  - `*_ci95_low`
+  - `*_ci95_high`
+  를 만든다
+- `principal_angles_deg_all`
+- `snorm_topk_all`
+  도 함께 저장한다
 
 #### `make_summary_dataframe(cfg, set_rows, overall_summary)`
 
-- set별 결과와 overall 결과를 하나의 `pandas.DataFrame`으로 정리한다.
-- 각 scalar metric은 `mean`, `std`, `ci95_low`, `ci95_high` 컬럼을 가진다.
+set별 결과와 overall row를 하나의 `DataFrame`으로 정리한다.
+
+주요 컬럼:
+
+- 메타데이터:
+  - `set_idx`
+  - `freqs`
+  - `thetas`
+  - `amplitudes`
+  - `phases`
+  - `actual_snr_db`
+  - `min_delta_f`
+  - `min_delta_theta`
+- basis numerical dim:
+  - `fourier_numerical_dim_*`
+- train/test 예측 및 representation 요약 지표들
+
+참고로 set별 row에는 train/test 요약 지표가 폭넓게 들어가지만, `overall_summary`는 현재 주로 test 쪽 핵심 지표와 일부 공통 지표 중심으로 집계한다.
 
 #### `plot_results(results, cfg)`
 
-- 기본 요약 그래프를 출력한다.
+`cfg.MAKE_PLOTS=True`일 때 기본 플롯 두 개를 출력한다.
+
+- `Train MSE by Set`
+- `Subspace Coverage by Set`
 
 #### `print_overall_summary(overall_summary, cfg)`
 
-- 최종 평균 지표를 문자열로 출력한다.
+현재 overall 평균 요약을 콘솔 친화적으로 출력한다.
 
 #### `print_overall_ci95_summary(overall_summary, cfg)`
 
-- 각 지표의 95% 신뢰구간을 별도로 출력한다.
+현재 overall 95% 신뢰구간을 콘솔에 출력한다.
 
 #### `run_experiment(cfg=None)`
 
 메인 엔트리포인트다.
 
-실행 순서:
+동작 순서:
 
 1. `ExperimentConfig` 준비
-2. 설정 검증
-3. 전체 seed 초기화
-4. `MODEL_ID`에 맞는 모델 선택
-5. bottleneck 차원 및 이론 rank 계산
-6. `NUM_EXPERIMENTS`만큼 다른 frequency/amplitude/phase set 생성
-7. 필요 시 noise 추가
-8. lag-window dataset 구성
-9. `TEST_RATIO` 기준 chronological train/test split 수행
-10. `SEEDS_PER_FREQ`번 학습 반복
-11. `H_test` 기준 핵심 지표 계산
-12. set 단위 집계
-13. 전체 요약 DataFrame과 dict 결과 생성
-14. 옵션에 따라 plot 및 출력
+2. `validate_config`
+3. 전체 seed 고정
+4. 모델 차원 계산
+5. signal set 생성
+6. noise 주입 여부 처리
+7. lag-window dataset 생성
+8. train/test split
+9. 여러 training seed 반복 학습
+10. set별 집계
+11. overall summary 생성
+12. `summary_df` 반환
+13. 옵션에 따라 출력과 플롯 실행
 
-주요 반환값:
+반환 딕셔너리의 주요 키:
 
 - `config_df`
 - `config`
@@ -367,7 +462,7 @@ spectral_gap_2k = sigma_(2k) / sigma_(2k+1)
 
 ## 추천 워크플로
 
-### 1. 기본 실행
+### 1. 기본 실험
 
 ```python
 from src import ExperimentConfig, run_experiment
@@ -376,38 +471,20 @@ cfg = ExperimentConfig()
 results = run_experiment(cfg)
 ```
 
-### 2. 모델 변형 비교
+### 2. continuous/discrete 비교
 
 ```python
-cfg = ExperimentConfig(
-    MODEL_ID="AN002_NO_BN_TANH",
-    NUM_FREQS=5,
-    RANDOM_AMPLITUDE=False,
-    RANDOM_PHASE=True,
-    NORMALIZE_H_COLUMNS=True,
-    LAG=80,
-    SEQ_LEN=5000,
-    DT=0.01,
-)
-results = run_experiment(cfg)
+cfg_cont = ExperimentConfig(time_mode="continuous", NUM_FREQS=4)
+cfg_disc = ExperimentConfig(time_mode="discrete", NUM_FREQS=4)
 ```
 
-### 3. 노이즈 제거/복원 실험
+### 3. `k` sweep 노트북
 
-```python
-cfg = ExperimentConfig(
-    MODEL_ID="AN004_DEEP_TANH",
-    USE_NOISE=True,
-    NOISE_TYPE="ar1",
-    SNR_DB=5.0,
-    TRAIN_TARGET="clean",
-)
-results = run_experiment(cfg)
-```
+`experiments/hyperparameter_k_sweep/` 아래 노트북은 다른 하이퍼파라미터는 고정하고 `NUM_FREQS`만 바꾸는 용도로 정리돼 있다.
 
-## 이후 실험을 위한 원칙
+## 유지 원칙
 
-- 새 파라미터는 먼저 `ExperimentConfig`에 올릴 것
-- 재사용 가능한 로직은 노트북에 직접 쓰지 말고 `src`로 이동할 것
-- 실험 결과 표준 구조는 `run_experiment()` 반환 형태를 유지할 것
-- 새 모델 변형은 모델 클래스와 `MODEL_ID`를 함께 추가할 것
+- 새 파라미터는 먼저 `ExperimentConfig`에 추가한다
+- 재사용할 로직은 노트북 대신 `src/`로 올린다
+- 기존 API는 가능한 유지하고, 새 기능은 mode-aware branch로 추가한다
+- 문서 변경이 필요한 기능을 넣었으면 루트 `README.md`와 `src/README.md`를 함께 갱신한다

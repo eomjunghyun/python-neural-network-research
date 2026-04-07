@@ -1,374 +1,182 @@
 # python-neural-network-research
 
-이 레포지토리는 `0326_실험5_정규화.ipynb`를 기준으로 정리한 연구 베이스 코드다.  
-핵심 관심사는 여러 개의 사인파 성분으로 이루어진 시계열을 신경망이 어떻게 표현하는지, 그리고 그 내부 표현이 실제 생성 주파수 subspace와 얼마나 정렬되는지를 분석하는 것이다.
+여러 개의 사인파 성분으로 이루어진 1차원 시계열을 신경망이 `next-step prediction`으로 학습할 때, 내부 병목 표현이 어떤 차원 구조와 주파수 subspace 정렬을 보이는지 연구하는 레포지토리다.
 
-주요 연구 질문은 다음과 같다.
+현재 코드는 기존 연속시간 샘플링 방식과, 새로 추가된 이산시간 직접 생성 방식을 모두 지원한다.
 
-- 여러 개의 정수 주파수 성분을 합성한 시계열을 next-step prediction으로 학습할 때, 병목 표현의 차원 구조가 어떻게 형성되는가
-- 이론적 rank `2 * NUM_FREQS`와 실제 hidden representation의 effective rank가 얼마나 가깝게 나타나는가
-- hidden representation이 실제 생성 주파수의 `sin/cos` basis subspace를 얼마나 잘 포착하는가
-- amplitude, phase, lag, sequence length, sampling interval, noise, 모델 구조가 위 현상에 어떤 영향을 주는가
+## 연구 목표
 
-## 문제 설정
+- 사인파 합성 시계열을 예측하도록 학습했을 때 hidden representation의 유효 차원이 어떻게 형성되는가
+- 이론적 rank `2 * NUM_FREQS`와 실제 특징 행렬의 rank proxy가 얼마나 가까운가
+- hidden subspace가 실제 생성 basis의 subspace와 얼마나 잘 정렬되는가
+- amplitude, phase, lag, sequence length, noise, 모델 구조, `k=NUM_FREQS` 변화가 위 현상에 어떤 영향을 주는가
 
-길이 `SEQ_LEN`의 1차원 시계열을 생성한다. 각 시계열은 `NUM_FREQS`개의 정수 주파수 성분 합으로 구성된다.
+## 신호 생성 모드
 
-```text
-x_k(t) = a_k * sin(w_k * t + phi_k)
-x(t) = sum_k x_k(t)
-```
+### 1. Continuous mode
 
-여기서
+기본 모드다.
 
-- `w_k`는 정수 각주파수
-- `a_k`는 amplitude
-- `phi_k`는 phase
+\[
+x(t)=\sum_{j=1}^{k} a_j \sin(\omega_j t+\phi_j), \qquad t_n=n \cdot DT
+\]
 
-이다. 실험에 따라 amplitude와 phase는 고정되거나 무작위 샘플링된다.
+- 연속시간 신호를 먼저 정의한 뒤 `DT` 간격으로 샘플링한다
+- 설정 키는 `time_mode="continuous"`
+- 주파수는 `FREQ_MIN ~ FREQ_MAX` 범위의 정수 각주파수에서 중복 없이 뽑는다
 
-학습 과제는 길이 `LAG`짜리 슬라이딩 윈도우로 다음 시점을 예측하는 것이다.
+### 2. Discrete mode
+
+새로 추가된 모드다.
+
+\[
+y_n=\sum_{j=1}^{k} a_j \sin(\theta_j n+\phi_j), \qquad n=0,1,\dots,N-1
+\]
+
+- 처음부터 이산시간 시계열을 직접 생성한다
+- 설정 키는 `time_mode="discrete"`
+- `theta_min`, `theta_max` 사이에서 discrete angular frequency를 직접 샘플링한다
+- 기본 범위는 `0.05 * pi`부터 `0.85 * pi`까지다
+
+## 학습 과제
+
+길이 `LAG`의 슬라이딩 윈도우로 다음 시점을 예측한다.
 
 - 입력: `x[t : t + LAG]`
 - 타깃: `x[t + LAG]`
 
-노이즈 실험에서는 noisy signal을 입력으로 사용하고, 타깃은 아래 둘 중 하나를 선택한다.
+노이즈 실험에서는 noisy signal을 입력으로 쓰고, 타깃은 아래 둘 중 하나다.
 
 - `TRAIN_TARGET="noisy"`: noisy 신호 자체를 예측
 - `TRAIN_TARGET="clean"`: clean 신호를 복원하도록 학습
 
-## 모델 구성
+## 모델
 
-현재 베이스 코드에는 식별자 기반으로 4개의 모델이 있다. 실험 시 `MODEL_ID`로 선택한다.
-
-### `AN001_BN_RELU`
-
-기존 베이스라인을 이름만 정리한 모델이다.
-
-```text
-Input(LAG)
- -> Linear(LAG, HIDDEN_DIM)
- -> BatchNorm1d
- -> ReLU
- -> Linear(HIDDEN_DIM, BOTTLENECK_MULTIPLIER * NUM_FREQS)
- -> BatchNorm1d
- -> Linear(bottleneck_dim, 1, bias=False)
-```
-
-### `AN002_NO_BN_TANH`
-
-배치 정규화를 제거하고 활성화 함수를 `Tanh`로 바꾼 모델이다.
-
-```text
-Input(LAG)
- -> Linear(LAG, HIDDEN_DIM)
- -> Tanh
- -> Linear(HIDDEN_DIM, BOTTLENECK_MULTIPLIER * NUM_FREQS)
- -> Tanh
- -> Linear(bottleneck_dim, 1, bias=False)
-```
-
-### `AN003_LINEAR`
-
-활성화 함수를 제거한 선형 모델이다.
-
-```text
-Input(LAG)
- -> Linear(LAG, HIDDEN_DIM)
- -> Linear(HIDDEN_DIM, BOTTLENECK_MULTIPLIER * NUM_FREQS)
- -> Linear(bottleneck_dim, 1, bias=False)
-```
-
-### `AN004_DEEP_TANH`
-
-`Tanh` 기반 모델에 hidden layer를 하나 더 추가한 모델이다.
-
-```text
-Input(LAG)
- -> Linear(LAG, HIDDEN_DIM)
- -> Tanh
- -> Linear(HIDDEN_DIM, HIDDEN_DIM)
- -> Tanh
- -> Linear(HIDDEN_DIM, BOTTLENECK_MULTIPLIER * NUM_FREQS)
- -> Tanh
- -> Linear(bottleneck_dim, 1, bias=False)
-```
-
-공통 해석 포인트:
-
-- `bottleneck_dim = BOTTLENECK_MULTIPLIER * NUM_FREQS`
-- `theoretical_rank = 2 * NUM_FREQS`
-- hidden representation의 column space와 실제 생성 주파수의 `sin/cos` basis subspace를 직접 비교한다
-
-## 실험 파이프라인
-
-한 번의 `run_experiment(cfg)`는 아래 순서로 진행된다.
-
-1. `ExperimentConfig` 준비
-2. 설정 검증
-3. 전역 seed 고정
-4. `MODEL_ID`에 맞는 모델 선택
-5. bottleneck 차원과 이론 rank 계산
-6. `NUM_EXPERIMENTS`개의 서로 다른 signal set 생성
-7. 필요 시 noise 추가
-8. lag-window dataset 생성
-9. 시계열 순서를 유지한 채 `TEST_RATIO` 비율로 train/test 분할
-10. 각 signal set마다 `SEEDS_PER_FREQ`개의 다른 학습 seed로 모델 반복 학습
-11. `H_test` 기준 핵심 지표 계산
-12. seed 평균 및 표준편차 집계
-13. 같은 집계 단위에서 정규 근사 기반 95% 신뢰구간 계산
-14. set별 결과와 overall 결과를 DataFrame으로 정리
-15. 필요 시 plot 출력
-
-## 주요 분석 지표
-
-### 예측 성능
-
-- `mse`: train mean squared error
-- `mae`: train mean absolute error
-- `acc`: `|error| <= ACC_TOLERANCE` 비율
-- `test_mse`: 테스트 평균제곱오차
-- `test_r2`: 테스트 결정계수
-
-집계 출력은 각 지표에 대해 아래 세 가지를 함께 제공한다.
-
-- 평균(`*_mean`)
-- 표준편차(`*_std`)
-- 95% 신뢰구간(`*_ci95_low`, `*_ci95_high`)
-
-### rank 관련 지표
-
-- `rank_threshold`: 정규화 singular value가 `RANK_THRESHOLD`보다 큰 개수
-- `rank_entropy`: singular value entropy 기반 effective rank
-- `rank_gap`: `|rank_threshold - theoretical_rank|`
-- `rel_rank_gap`: `rank_gap / theoretical_rank`
-- `spectral_gap_2k`: 이론 rank 위치의 singular value gap
-
-```text
-spectral_gap_2k = sigma_(2k) / sigma_(2k+1)
-```
-
-### subspace alignment 지표
-
-실제 생성 주파수 `freqs`에 대해 `sin(freq * t)`와 `cos(freq * t)`를 basis로 구성하고, 테스트 특징 행렬 `H_test`의 SVD를 이용해 아래 지표를 계산한다.
-
-- `alignment_score_2k`: 상위 `2k`차 정렬 점수
-
-```text
-A_2k = (1 / 2k) * || Q_F^T U_H^(2k) ||_F^2
-```
-
-- `mean_principal_angle_deg`: `Q_F`와 `U_H^(2k)` 사이 평균 주각
-- `energy_ratio_2k`: 상위 `2k`개 특이값 에너지 비율
-
-```text
-E_2k = sum_{i=1}^{2k} sigma_i^2 / sum_i sigma_i^2
-```
-
-- `align_coverage`
-- `align_purity`
-- `alignment_score_2k`
-- `align_mean_cosine`
-- `mean_principal_angle_deg`
-- `principal_angles_deg`
-
-### noise 관련 지표
-
-`USE_NOISE=True`일 때 아래 지표가 추가된다.
-
-- `input_snr_db`
-- `output_snr_db`
-- `snr_gain_db`
-
-## 하이퍼파라미터 전체 설명
-
-아래는 현재 `ExperimentConfig`에 정의된 전체 파라미터다.
-
-### 1. Seed 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `GLOBAL_SEED` | `42` | 실험 전체 전역 재현성 seed |
-| `DATA_SEED_BASE` | `1000` | signal set 생성 seed 시작값 |
-| `NOISE_SEED_BASE` | `50000` | noise 생성 seed 시작값 |
-| `TRAIN_SEED_BASE` | `100` | 학습 반복 seed 시작값 |
-
-### 2. 데이터 생성 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `SEQ_LEN` | `1000` | 시계열 길이 |
-| `DT` | `0.05` | 샘플링 간격 |
-| `NUM_FREQS` | `4` | 한 signal을 구성하는 주파수 개수 |
-| `NUM_FREQS_MIN` | `1` | 허용 최소 주파수 개수 |
-| `NUM_FREQS_MAX` | `30` | 허용 최대 주파수 개수 |
-| `FREQ_MIN` | `1` | 샘플링 가능한 최소 정수 주파수 |
-| `FREQ_MAX` | `60` | 샘플링 가능한 최대 정수 주파수 |
-| `NYQUIST_MARGIN` | `0.98` | Nyquist 한계보다 얼마나 보수적으로 제약할지 나타내는 margin |
-
-중요 제약:
-
-- `NUM_FREQS <= FREQ_MAX - FREQ_MIN + 1`
-- `FREQ_MAX < NYQUIST_MARGIN * (pi / DT)`
-
-### 3. Amplitude / Phase 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `RANDOM_AMPLITUDE` | `True` | amplitude를 랜덤 샘플링할지 여부 |
-| `AMP_MIN` | `0.5` | amplitude 랜덤 샘플링 최소값 |
-| `AMP_MAX` | `2.0` | amplitude 랜덤 샘플링 최대값 |
-| `RANDOM_PHASE` | `False` | phase를 랜덤 샘플링할지 여부 |
-| `PHASE_MIN` | `0.0` | phase 랜덤 샘플링 최소값 |
-| `PHASE_MAX` | `2pi` | phase 랜덤 샘플링 최대값 |
-
-동작:
-
-- `RANDOM_AMPLITUDE=False`면 모든 amplitude는 `1`
-- `RANDOM_PHASE=False`면 모든 phase는 `0`
-
-### 4. Noise 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `USE_NOISE` | `False` | noisy 입력 실험 여부 |
-| `NOISE_TYPE` | `"white"` | noise 종류 (`white`, `ar1`, `impulsive`) |
-| `SNR_DB` | `10.0` | 목표 SNR(dB) |
-| `AR1_RHO` | `0.8` | AR(1) noise 자기회귀 계수 |
-| `IMPULSE_PROB` | `0.01` | impulsive noise 발생 확률 |
-| `IMPULSE_SCALE` | `8.0` | impulsive spike 크기 배수 |
-
-### 5. 학습 타깃 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `TRAIN_TARGET` | `"noisy"` | noisy를 맞출지 clean을 복원할지 결정 |
-
-가능 값:
-
-- `"noisy"`
-- `"clean"`
-
-### 6. 모델 / 최적화 관련
-
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `MODEL_ID` | `"AN001_BN_RELU"` | 사용할 모델 식별자 |
-| `LAG` | `32` | 입력 윈도우 길이 |
-| `HIDDEN_DIM` | `64` | 첫 hidden layer 차원 |
-| `BOTTLENECK_MULTIPLIER` | `4` | bottleneck 차원 계산 계수 |
-| `LR` | `0.01` | Adam 학습률 |
-| `EPOCHS` | `1000` | seed별 학습 epoch 수 |
-
-가능한 `MODEL_ID`:
+`MODEL_ID`로 아래 네 가지 모델을 선택할 수 있다.
 
 - `AN001_BN_RELU`
 - `AN002_NO_BN_TANH`
 - `AN003_LINEAR`
 - `AN004_DEEP_TANH`
 
-유도되는 값:
+공통적으로 bottleneck representation `h`를 함께 반환하며,
 
-- `theoretical_rank = 2 * NUM_FREQS`
 - `bottleneck_dim = BOTTLENECK_MULTIPLIER * NUM_FREQS`
+- `theoretical_rank = 2 * NUM_FREQS`
 
-### 7. 반복 실험 관련
+를 기준으로 representation 지표를 계산한다.
 
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `NUM_EXPERIMENTS` | `5` | 서로 다른 signal set 개수 |
-| `SEEDS_PER_FREQ` | `10` | 각 signal set당 학습 반복 수 |
-| `TEST_RATIO` | `0.2` | 시계열 순서를 유지한 test split 비율 |
+## 주요 지표
 
-### 8. 지표 계산 관련
+### 예측 성능
 
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `ACC_TOLERANCE` | `0.1` | accuracy 계산 시 허용 오차 |
-| `RANK_THRESHOLD` | `0.05` | threshold rank 기준값 |
-| `SCREE_TOPK` | `20` | 상위 singular value 저장 개수 |
-| `NORMALIZE_H_COLUMNS` | `False` | hidden matrix column 정규화 여부 |
+- train: `mse`, `mae`, `acc`, `train_r2`
+- test: `test_mse`, `test_mae`, `test_acc`, `test_r2`
 
-### 9. 출력 제어 관련
+### rank 관련
 
-| 이름 | 기본값 | 설명 |
-| --- | ---: | --- |
-| `VERBOSE` | `True` | 콘솔 상세 로그 출력 여부 |
-| `MAKE_PLOTS` | `False` | 요약 그래프 생성 여부 |
+- train: `train_rank_threshold`, `train_rank_entropy`, `train_rank_gap`, `train_rel_rank_gap`
+- test: `rank_threshold`, `rank_entropy`, `rank_gap`, `rel_rank_gap`
+- 추가 스펙트럼 지표:
+  - `train_spectral_gap_2k`, `spectral_gap_2k`
+  - `train_energy_ratio_2k`, `energy_ratio_2k`
 
-## 현재 노트북에서 확인된 실험 케이스
+### subspace alignment
 
-제공된 `0326_실험5_정규화.ipynb` 기준으로 확인한 실행 케이스는 아래와 같다.
+특징 행렬의 열공간과, 샘플링된 `sin/cos` basis 행렬의 열공간을 비교한다.
 
-### 실험 1
+- train:
+  - `train_align_coverage`
+  - `train_align_purity`
+  - `train_alignment_score_2k`
+  - `train_align_mean_cosine`
+  - `train_mean_principal_angle_deg`
+- test:
+  - `align_coverage`
+  - `align_purity`
+  - `alignment_score_2k`
+  - `align_mean_cosine`
+  - `mean_principal_angle_deg`
 
-- `NUM_FREQS=4`
-- `RANDOM_AMPLITUDE=False`
-- `NORMALIZE_H_COLUMNS=True`
-- `RANDOM_PHASE=True`
+### basis numerical dimension
 
-### 실험 2
+샘플링된 basis 행렬의 수치적 랭크를 계산해 `fourier_numerical_dim`으로 기록한다.
 
-- `NUM_FREQS=4`
-- `RANDOM_AMPLITUDE=True`
-- `NORMALIZE_H_COLUMNS=True`
-- `RANDOM_PHASE=True`
+- continuous mode에서는 sampled Fourier basis의 수치적 랭크
+- discrete mode에서는 sampled discrete-time basis의 수치적 랭크
 
-### 실험 3
+### noise 관련
 
-- 실험 2와 동일
-- `LAG=64`
+`USE_NOISE=True`일 때 아래 지표가 추가된다.
 
-### 실험 4
+- train: `train_input_snr_db`, `train_output_snr_db`, `train_snr_gain_db`
+- test: `input_snr_db`, `output_snr_db`, `snr_gain_db`
 
-- 실험 2와 동일
-- `LAG=3`
+모든 seed 집계 지표는 `*_mean`, `*_std`, `*_ci95_low`, `*_ci95_high` 형태로 저장된다.
 
-### 실험 5
+## 실험 파이프라인
 
-- `NUM_FREQS=5`
-- `RANDOM_AMPLITUDE=True`
-- `NORMALIZE_H_COLUMNS=True`
-- `RANDOM_PHASE=True`
-- `LAG=3`
+`run_experiment(cfg)`는 아래 순서로 동작한다.
 
-### 실험 6
+1. `ExperimentConfig` 준비
+2. 설정 검증
+3. seed 고정
+4. 모델 생성
+5. signal set 생성
+6. 필요 시 noise 추가
+7. lag-window dataset 구성
+8. chronological train/test split
+9. 같은 signal set에 대해 여러 training seed 반복 학습
+10. train/test 예측 지표 계산
+11. train/test representation 지표 계산
+12. set별 집계
+13. overall summary와 `summary_df` 생성
+14. `MAKE_PLOTS=True`일 때 기본 플롯 출력
 
-- `NUM_FREQS=5`
-- `RANDOM_AMPLITUDE=False`
-- `NORMALIZE_H_COLUMNS=True`
-- `LAG=80`
+## 주요 설정
 
-### 실험 7
+핵심 설정은 `src/config.py`의 `ExperimentConfig`에 모여 있다.
 
-- `NUM_FREQS=5`
-- `RANDOM_AMPLITUDE=False`
-- `NORMALIZE_H_COLUMNS=True`
-- `LAG=80`
-- `SEQ_LEN=5000`
-- `DT=0.01`
+### 시간 모드 관련
 
-### 실험 8
+- `time_mode`: `"continuous"` 또는 `"discrete"`
+- continuous 전용:
+  - `DT`
+  - `FREQ_MIN`
+  - `FREQ_MAX`
+  - `NYQUIST_MARGIN`
+- discrete 전용:
+  - `theta_min`
+  - `theta_max`
 
-노트북상 실험 7과 설정이 완전히 동일하다. 중복 실행 또는 재현 확인용 셀로 해석할 수 있다.
+### 공통 데이터 생성 관련
 
-### 실험 9
+- `SEQ_LEN`
+- `NUM_FREQS`
+- `RANDOM_AMPLITUDE`, `AMP_MIN`, `AMP_MAX`
+- `RANDOM_PHASE`, `PHASE_MIN`, `PHASE_MAX`
 
-- 실험 7과 유사
-- `LAG=32`
+### 모델/학습 관련
 
-## 사용법
+- `MODEL_ID`
+- `LAG`
+- `HIDDEN_DIM`
+- `BOTTLENECK_MULTIPLIER`
+- `LR`
+- `EPOCHS`
 
-### 환경 준비
+### 반복 실험 관련
 
-프로젝트 루트에서 실행:
+- `NUM_EXPERIMENTS`
+- `SEEDS_PER_FREQ`
+- `TEST_RATIO`
 
-```powershell
-py -3.13 -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
+### 출력 관련
+
+- `VERBOSE`
+- `MAKE_PLOTS`
+
+## 빠른 시작
 
 ### 기본 실행
 
@@ -378,33 +186,49 @@ from src import ExperimentConfig, run_experiment
 cfg = ExperimentConfig()
 results = run_experiment(cfg)
 
-print(results["config_df"])
 print(results["summary_df"])
 ```
 
-### 모델 변형 비교 예시
+### Continuous mode 예시
 
 ```python
 from src import ExperimentConfig, run_experiment
 
 cfg = ExperimentConfig(
-    MODEL_ID="AN002_NO_BN_TANH",
-    NUM_FREQS=5,
-    RANDOM_AMPLITUDE=False,
+    time_mode="continuous",
+    NUM_FREQS=4,
+    RANDOM_AMPLITUDE=True,
     RANDOM_PHASE=True,
-    NORMALIZE_H_COLUMNS=True,
-    LAG=80,
-    SEQ_LEN=5000,
-    DT=0.01,
+    LAG=32,
 )
 results = run_experiment(cfg)
 ```
 
-### 노이즈 복원 실험 예시
+### Discrete mode 예시
 
 ```python
+import numpy as np
+from src import ExperimentConfig, run_experiment
+
 cfg = ExperimentConfig(
-    MODEL_ID="AN003_LINEAR",
+    time_mode="discrete",
+    NUM_FREQS=4,
+    SEQ_LEN=2000,
+    LAG=32,
+    theta_min=0.05 * np.pi,
+    theta_max=0.85 * np.pi,
+    RANDOM_AMPLITUDE=False,
+    RANDOM_PHASE=True,
+)
+results = run_experiment(cfg)
+```
+
+### 노이즈 복원 예시
+
+```python
+from src import ExperimentConfig, run_experiment
+
+cfg = ExperimentConfig(
     USE_NOISE=True,
     NOISE_TYPE="ar1",
     SNR_DB=5.0,
@@ -415,14 +239,16 @@ cfg = ExperimentConfig(
 results = run_experiment(cfg)
 ```
 
-```python
-cfg = ExperimentConfig(
-    MODEL_ID="AN004_DEEP_TANH",
-    NUM_FREQS=5,
-    RANDOM_PHASE=True,
-)
-results = run_experiment(cfg)
-```
+## 노트북
+
+실험용 노트북은 `experiments/` 아래에 정리한다.
+
+- `experiments/hyperparameter_k_sweep/20260406_k_sweep_k01_initial.ipynb`
+  - continuous mode에서 `k=1..16` sweep
+- `experiments/hyperparameter_k_sweep/20260406_k_sweep_discrete_k01_k16.ipynb`
+  - discrete mode에서 `k=1..16` sweep
+
+두 노트북 모두 실험 셀 하나당 하나의 `k`만 바꾸도록 구성되어 있다.
 
 ## 레포 구조
 
@@ -430,7 +256,9 @@ results = run_experiment(cfg)
 .
 ├─ README.md
 ├─ requirements.txt
-└─ src
+├─ experiments/
+│  └─ hyperparameter_k_sweep/
+└─ src/
    ├─ README.md
    ├─ __init__.py
    ├─ common_utils.py
@@ -441,7 +269,6 @@ results = run_experiment(cfg)
    └─ models.py
 ```
 
-## 참고
+## 추가 문서
 
-- 함수별 상세 설명과 사용 예시는 [`src/README.md`](C:/Users/WWindows10/Documents/github_project/python-neural-network-research/src/README.md)에 정리했다.
-- 이후 실험에서는 노트북에 공통 로직을 다시 쓰기보다 `src` 모듈을 확장하는 방식으로 유지하는 것을 기본 원칙으로 삼는다.
+- `src` 내부 함수/모듈 설명: [src/README.md](src/README.md)
