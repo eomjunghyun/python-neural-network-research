@@ -21,6 +21,20 @@ def _sample_phases(cfg: ExperimentConfig, rng_np: np.random.Generator) -> np.nda
     return np.zeros(cfg.NUM_FREQS, dtype=np.float64)
 
 
+def _sample_discrete_thetas(cfg: ExperimentConfig, rng_np: np.random.Generator) -> np.ndarray:
+    for _ in range(cfg.THETA_SAMPLE_MAX_ATTEMPTS):
+        thetas = np.sort(rng_np.uniform(cfg.theta_min, cfg.theta_max, size=cfg.NUM_FREQS))
+        if cfg.MIN_DELTA_THETA <= 0.0:
+            return thetas
+        if cfg.NUM_FREQS < 2 or np.min(np.diff(thetas)) >= cfg.MIN_DELTA_THETA:
+            return thetas
+
+    raise ValueError(
+        "Failed to sample discrete-time frequencies that satisfy MIN_DELTA_THETA. "
+        "Reduce NUM_FREQS, lower MIN_DELTA_THETA, or widen the theta range."
+    )
+
+
 def generate_continuous_sin_data(
     cfg: ExperimentConfig,
     rng_py: random.Random,
@@ -70,7 +84,7 @@ def generate_discrete_sin_data(
 
     _ = rng_py
     n = np.arange(cfg.SEQ_LEN, dtype=np.float64)
-    thetas = np.sort(rng_np.uniform(cfg.theta_min, cfg.theta_max, size=cfg.NUM_FREQS))
+    thetas = _sample_discrete_thetas(cfg, rng_np)
     amplitudes = _sample_amplitudes(cfg, rng_np)
     phases = _sample_phases(cfg, rng_np)
 
@@ -154,17 +168,72 @@ def add_noise_to_signal(
     return noisy.astype(np.float32), noise.astype(np.float32), float(actual_snr_db)
 
 
-def make_dataset(data: np.ndarray, lag: int) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Convert a 1D time series into lag-window regression tensors."""
+def make_dataset(
+    data: np.ndarray,
+    lag: int,
+    *,
+    start_idx: int = 0,
+    return_target_indices: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
+    """Convert a 1D time series into lag-window regression tensors.
 
-    x, y = [], []
+    When `return_target_indices=True`, absolute target indices are returned as
+    a third output so downstream alignment metrics can be evaluated at the
+    exact train/test target locations.
+    """
+
+    x, y, target_indices = [], [], []
     for idx in range(len(data) - lag):
         x.append(data[idx : idx + lag])
         y.append(data[idx + lag])
-    return (
-        torch.tensor(np.array(x), dtype=torch.float32),
-        torch.tensor(np.array(y), dtype=torch.float32).unsqueeze(1),
-    )
+        target_indices.append(start_idx + idx + lag)
+
+    if len(x) == 0:
+        x_tensor = torch.empty((0, lag), dtype=torch.float32)
+        y_tensor = torch.empty((0, 1), dtype=torch.float32)
+        index_array = np.empty((0,), dtype=np.int64)
+    else:
+        x_tensor = torch.tensor(np.array(x), dtype=torch.float32)
+        y_tensor = torch.tensor(np.array(y), dtype=torch.float32).unsqueeze(1)
+        index_array = np.asarray(target_indices, dtype=np.int64)
+
+    if return_target_indices:
+        return x_tensor, y_tensor, index_array
+    return x_tensor, y_tensor
+
+
+def split_raw_series_arrays(
+    *arrays: np.ndarray,
+    test_ratio: float,
+    val_ratio: float = 0.0,
+) -> Tuple[Tuple[np.ndarray, ...], Tuple[np.ndarray, ...], Tuple[np.ndarray, ...], Dict[str, Tuple[int, int]]]:
+    """Chronologically split aligned raw series into train/val/test segments."""
+
+    if len(arrays) == 0:
+        raise ValueError("At least one array is required for splitting.")
+
+    n_samples = len(arrays[0])
+    if any(len(array) != n_samples for array in arrays):
+        raise ValueError("All arrays must have the same length.")
+
+    n_test = max(1, int(np.floor(n_samples * test_ratio)))
+    n_val = max(1, int(np.floor(n_samples * val_ratio))) if val_ratio > 0.0 else 0
+    n_train = n_samples - n_val - n_test
+    if n_train < 1:
+        raise ValueError("The requested train/val/test split leaves no training samples.")
+
+    train_end = n_train
+    val_end = n_train + n_val
+
+    train_arrays = tuple(np.asarray(array[:train_end]) for array in arrays)
+    val_arrays = tuple(np.asarray(array[train_end:val_end]) for array in arrays)
+    test_arrays = tuple(np.asarray(array[val_end:]) for array in arrays)
+    split_bounds = {
+        "train": (0, train_end),
+        "val": (train_end, val_end),
+        "test": (val_end, n_samples),
+    }
+    return train_arrays, val_arrays, test_arrays, split_bounds
 
 
 def split_train_test_tensors(

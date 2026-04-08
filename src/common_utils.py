@@ -52,12 +52,18 @@ def validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError(f"MODEL_ID must be one of: {supported}.")
     if not (0.0 < cfg.TEST_RATIO < 1.0):
         raise ValueError("TEST_RATIO must be strictly between 0 and 1.")
+    if not (0.0 <= cfg.VAL_RATIO < 1.0):
+        raise ValueError("VAL_RATIO must lie in [0, 1).")
+    if cfg.VAL_RATIO + cfg.TEST_RATIO >= 1.0:
+        raise ValueError("VAL_RATIO + TEST_RATIO must be strictly less than 1.")
     if cfg.NOISE_TYPE not in ("white", "ar1", "impulsive"):
         raise ValueError("NOISE_TYPE must be one of: 'white', 'ar1', 'impulsive'.")
     if cfg.AMP_MIN <= 0 or cfg.AMP_MAX <= 0 or cfg.AMP_MIN > cfg.AMP_MAX:
         raise ValueError("AMP_MIN and AMP_MAX must be positive and satisfy AMP_MIN <= AMP_MAX.")
     if cfg.PHASE_MIN > cfg.PHASE_MAX:
         raise ValueError("PHASE_MIN must be less than or equal to PHASE_MAX.")
+    if cfg.BOTTLENECK_DIM_OVERRIDE is not None and cfg.BOTTLENECK_DIM_OVERRIDE < 1:
+        raise ValueError("BOTTLENECK_DIM_OVERRIDE must be positive when provided.")
     if cfg.time_mode == "continuous":
         if cfg.NUM_FREQS > (cfg.FREQ_MAX - cfg.FREQ_MIN + 1):
             raise ValueError("NUM_FREQS exceeds the number of available integer frequencies.")
@@ -65,6 +71,16 @@ def validate_config(cfg: ExperimentConfig) -> None:
     else:
         if not (0.0 < cfg.theta_min < cfg.theta_max < np.pi):
             raise ValueError("Discrete mode requires 0 < theta_min < theta_max < pi.")
+        if cfg.MIN_DELTA_THETA < 0.0:
+            raise ValueError("MIN_DELTA_THETA must be non-negative.")
+        if cfg.THETA_SAMPLE_MAX_ATTEMPTS < 1:
+            raise ValueError("THETA_SAMPLE_MAX_ATTEMPTS must be at least 1.")
+        available_span = cfg.theta_max - cfg.theta_min
+        required_span = cfg.MIN_DELTA_THETA * max(0, cfg.NUM_FREQS - 1)
+        if required_span >= available_span:
+            raise ValueError(
+                "MIN_DELTA_THETA is too large for the requested NUM_FREQS and theta range."
+            )
 
 
 def mean_std(values: List[float]) -> Tuple[float, float]:

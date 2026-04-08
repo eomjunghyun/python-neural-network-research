@@ -6,6 +6,7 @@ from .data_utils import (
     generate_discrete_sin_data,
     generate_sin_data,
     make_dataset,
+    split_raw_series_arrays,
     split_train_test_tensors,
 )
 from .experiment_runner import (
@@ -68,6 +69,7 @@ __all__ = [
     "generate_sin_data",
     "add_noise_to_signal",
     "make_dataset",
+    "split_raw_series_arrays",
     "split_train_test_tensors",
     "regression_accuracy",
     "regression_r2",

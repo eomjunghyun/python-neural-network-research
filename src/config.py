@@ -15,10 +15,12 @@ class ExperimentConfig:
     TRAIN_SEED_BASE: int = 100
 
     SEQ_LEN: int = 1000
-    time_mode: str = "continuous"
+    time_mode: str = "discrete"
     DT: float = 0.05
     theta_min: float = 0.05 * np.pi
     theta_max: float = 0.85 * np.pi
+    MIN_DELTA_THETA: float = 0.0
+    THETA_SAMPLE_MAX_ATTEMPTS: int = 1000
     NUM_FREQS: int = 4
     NUM_FREQS_MIN: int = 1
     NUM_FREQS_MAX: int = 30
@@ -47,11 +49,13 @@ class ExperimentConfig:
     LAG: int = 32
     HIDDEN_DIM: int = 64
     BOTTLENECK_MULTIPLIER: int = 4
+    BOTTLENECK_DIM_OVERRIDE: int | None = None
     LR: float = 0.01
     EPOCHS: int = 1000
 
     NUM_EXPERIMENTS: int = 5
     SEEDS_PER_FREQ: int = 10
+    VAL_RATIO: float = 0.0
     TEST_RATIO: float = 0.2
 
     ACC_TOLERANCE: float = 0.1

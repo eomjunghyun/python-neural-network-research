@@ -13,8 +13,10 @@ class AnalyticNetAN001BnReLU(nn.Module):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, bottleneck_dim),
+            nn.BatchNorm1d(bottleneck_dim),
         )
         self.readout = nn.Linear(bottleneck_dim, 1, bias=False)
 
