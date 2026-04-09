@@ -1,4 +1,11 @@
-from .common_utils import mean_std, mean_std_ci95, set_seed, validate_config, validate_sampling_constraints
+from .common_utils import (
+    mean_std,
+    mean_std_ci95,
+    resolve_torch_device,
+    set_seed,
+    validate_config,
+    validate_sampling_constraints,
+)
 from .config import ExperimentConfig
 from .data_utils import (
     add_noise_to_signal,
@@ -64,6 +71,7 @@ __all__ = [
     "validate_config",
     "mean_std",
     "mean_std_ci95",
+    "resolve_torch_device",
     "generate_continuous_sin_data",
     "generate_discrete_sin_data",
     "generate_sin_data",

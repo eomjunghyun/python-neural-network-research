@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from .common_utils import mean_std_ci95, set_seed, validate_config
+from .common_utils import mean_std_ci95, resolve_torch_device, set_seed, validate_config
 from .config import ExperimentConfig
 from .data_utils import (
     add_noise_to_signal,
@@ -238,6 +238,7 @@ def _copy_summary_aliases(summary_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 def train_one_seed(
     cfg: ExperimentConfig,
+    device: torch.device,
     x_train: torch.Tensor,
     y_train_target: torch.Tensor,
     train_target_indices: np.ndarray,
@@ -257,9 +258,17 @@ def train_one_seed(
 
     set_seed(seed)
 
-    model = build_model(cfg.MODEL_ID, cfg.LAG, cfg.HIDDEN_DIM, bottleneck_dim)
+    model = build_model(cfg.MODEL_ID, cfg.LAG, cfg.HIDDEN_DIM, bottleneck_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.LR)
     criterion = nn.MSELoss()
+    x_train = x_train.to(device)
+    y_train_target = y_train_target.to(device)
+    x_test = x_test.to(device)
+    y_test_target = y_test_target.to(device)
+    y_clean_train = y_clean_train.to(device)
+    y_clean_test = y_clean_test.to(device)
+    y_noisy_train = y_noisy_train.to(device)
+    y_noisy_test = y_noisy_test.to(device)
 
     model.train()
     for _ in range(cfg.EPOCHS):
@@ -548,6 +557,8 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
 
     validate_config(cfg)
     set_seed(cfg.GLOBAL_SEED)
+    device = resolve_torch_device(cfg.DEVICE)
+    cfg_dict["resolved_device"] = str(device)
 
     if cfg.VERBOSE:
         print("\n=== Experiment hyperparameters ===")
@@ -567,14 +578,14 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
             print(
                 f"--- Start experiment (mode=continuous, bottleneck={bottleneck_dim}, "
                 f"num_freqs={cfg.NUM_FREQS}, theoretical_rank={theoretical_rank}, "
-                f"freq_range=[{cfg.FREQ_MIN}, {cfg.FREQ_MAX}], dt={cfg.DT}) ---"
+                f"freq_range=[{cfg.FREQ_MIN}, {cfg.FREQ_MAX}], dt={cfg.DT}, device={device}) ---"
             )
         else:
             print(
                 f"--- Start experiment (mode=discrete, bottleneck={bottleneck_dim}, "
                 f"num_freqs={cfg.NUM_FREQS}, theoretical_rank={theoretical_rank}, "
                 f"theta_range=[{cfg.theta_min:.4f}, {cfg.theta_max:.4f}], "
-                f"min_delta_theta={cfg.MIN_DELTA_THETA:.4f}) ---"
+                f"min_delta_theta={cfg.MIN_DELTA_THETA:.4f}, device={device}) ---"
             )
 
     set_rows: List[Dict[str, Any]] = []
@@ -665,6 +676,7 @@ def run_experiment(cfg: Optional[ExperimentConfig] = None) -> Dict[str, Any]:
         for seed_idx in range(cfg.SEEDS_PER_FREQ):
             seed_result = train_one_seed(
                 cfg=cfg,
+                device=device,
                 x_train=x_train,
                 y_train_target=y_train_target,
                 train_target_indices=train_target_indices,

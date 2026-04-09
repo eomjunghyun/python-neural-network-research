@@ -50,6 +50,8 @@ def validate_config(cfg: ExperimentConfig) -> None:
     if cfg.MODEL_ID not in MODEL_REGISTRY:
         supported = ", ".join(MODEL_REGISTRY)
         raise ValueError(f"MODEL_ID must be one of: {supported}.")
+    if cfg.DEVICE not in ("auto", "cuda", "mps", "cpu"):
+        raise ValueError("DEVICE must be one of: 'auto', 'cuda', 'mps', 'cpu'.")
     if not (0.0 < cfg.TEST_RATIO < 1.0):
         raise ValueError("TEST_RATIO must be strictly between 0 and 1.")
     if not (0.0 <= cfg.VAL_RATIO < 1.0):
@@ -81,6 +83,35 @@ def validate_config(cfg: ExperimentConfig) -> None:
             raise ValueError(
                 "MIN_DELTA_THETA is too large for the requested NUM_FREQS and theta range."
             )
+
+
+def resolve_torch_device(device_preference: str = "auto") -> torch.device:
+    """Resolve a torch device from a stable config string.
+
+    Preference order for `auto` is CUDA, then MPS, then CPU.
+    """
+
+    mps_backend = getattr(torch.backends, "mps", None)
+    mps_available = bool(mps_backend is not None and mps_backend.is_available())
+
+    if device_preference == "cuda":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        raise ValueError("DEVICE='cuda' was requested but CUDA is not available.")
+
+    if device_preference == "mps":
+        if mps_available:
+            return torch.device("mps")
+        raise ValueError("DEVICE='mps' was requested but MPS is not available.")
+
+    if device_preference == "cpu":
+        return torch.device("cpu")
+
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if mps_available:
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def mean_std(values: List[float]) -> Tuple[float, float]:

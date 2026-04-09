@@ -45,6 +45,7 @@ class ExperimentConfig:
     TRAIN_TARGET: str = "noisy"
 
     MODEL_ID: str = "AN001_BN_RELU"
+    DEVICE: str = "auto"
 
     LAG: int = 32
     HIDDEN_DIM: int = 64
